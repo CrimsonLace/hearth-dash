@@ -1,3 +1,5 @@
+import { configuredPartners, formatPartnerList } from './partners.js';
+
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -9,8 +11,12 @@ function inlineJson(value) {
 }
 
 export function getRedesignedDashboardHTML(config) {
-  const partner1 = escapeHtml(config.PARTNER_1);
-  const partner2 = escapeHtml(config.PARTNER_2);
+  const partners = configuredPartners(config);
+  const partnerOptions = partners.map(partner => {
+    const escapedPartner = escapeHtml(partner);
+    return `<option value="${escapedPartner}">${escapedPartner}</option>`;
+  }).join('');
+  const hearthOwners = escapeHtml(formatPartnerList(partners));
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -20,7 +26,7 @@ export function getRedesignedDashboardHTML(config) {
   <style>
     :root{--bg:#F7F2EA;--card:#FFFDFC;--rose:#B86B7A;--plum:#7C5A72;--gold:#C7A35A;--sage:#8FA58D;--text:#3A3436;--muted:#7D7477;--line:#E8DDD2;--danger:#A44E57;--shadow:0 10px 30px rgba(74,55,59,.08)}
     *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer}
-    .shell{width:min(1220px,100%);margin:auto;padding:1.25rem}.topbar{display:flex;align-items:center;gap:1rem;justify-content:space-between;padding:1rem 0 1.2rem}.brand{font-family:Georgia,serif;font-size:2rem;color:var(--plum);letter-spacing:.02em}.tagline{color:var(--muted);font-size:.86rem}
+    .shell{width:min(1220px,100%);margin:auto;padding:1.25rem}.topbar{display:flex;align-items:center;gap:1rem;justify-content:space-between;padding:1rem 0 1.2rem;flex-wrap:wrap}.brand{font-family:Georgia,serif;font-size:2rem;color:var(--plum);letter-spacing:.02em}.tagline{color:var(--muted);font-size:.86rem;overflow-wrap:anywhere}
     .menu-toggle{display:none;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:.65rem .85rem;color:var(--plum)}nav{display:flex;gap:.35rem;flex-wrap:wrap;border-block:1px solid var(--line);padding:.75rem 0;margin-bottom:1.5rem}nav a{color:var(--muted);text-decoration:none;padding:.55rem .72rem;border-radius:999px;font-size:.91rem}nav a:hover,nav a.active{color:#fff;background:var(--plum)}
     .page{display:none}.page.active{display:block}.page-head{margin-bottom:1.2rem}.page-head h1{font:700 1.7rem/1.2 Georgia,serif;color:var(--plum);margin:.1rem 0}.page-head p{margin:.35rem 0;color:var(--muted)}
     .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:1rem}.card{grid-column:span 4;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:1.1rem;box-shadow:var(--shadow);min-width:0}.card.wide{grid-column:span 8}.card.full{grid-column:1/-1}.card.half{grid-column:span 6}.card h2,.card h3{margin:0 0 .8rem;color:var(--plum)}.card h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.11em}.card h3{font-size:1.05rem}.metric{font:700 1.55rem/1.2 Georgia,serif;color:var(--rose)}.muted,.empty{color:var(--muted)}.empty{font-style:italic}.stack{display:grid;gap:.65rem}.row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.65rem 0;border-bottom:1px solid var(--line)}.row:last-child{border:0}.row-main{min-width:0}.row-title{font-weight:700;overflow-wrap:anywhere}.meta{font-size:.82rem;color:var(--muted)}.badge{display:inline-flex;border-radius:999px;padding:.15rem .52rem;background:#F2E7EA;color:var(--rose);font-size:.73rem;font-weight:700}.badge.sage{background:#E9EFE8;color:#586E56}.badge.gold{background:#F4ECD9;color:#806727}
@@ -35,7 +41,7 @@ export function getRedesignedDashboardHTML(config) {
 </head>
 <body>
 <div class="shell">
-  <header class="topbar"><div><div class="brand">Hearth</div><div class="tagline">A gentle place for everyday life</div></div><button class="menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="main-nav">Menu</button></header>
+  <header class="topbar"><div><div class="brand">Hearth</div><div class="tagline">A shared Hearth for ${hearthOwners}</div></div><button class="menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="main-nav">Menu</button></header>
   <nav id="main-nav" aria-label="Main navigation">
     ${['Dashboard','Moods','Notes','Moments','Dates','Shopping','Medical','Household','Home Admin','Food'].map(label => `<a href="#${label.toLowerCase().replace(' ','-')}" data-page="${label.toLowerCase().replace(' ','-')}">${label}</a>`).join('')}
     <a href="/logout">Log out</a>
@@ -56,15 +62,15 @@ export function getRedesignedDashboardHTML(config) {
       <article class="card wide"><h2>Quick capture</h2><form id="quick-form"><label>Put it somewhere safe<input name="content" maxlength="4000" required placeholder="Remember to…"></label><button class="btn" type="submit">Save to Notes</button><div class="notice"></div></form></article>
     </div></section>
 
-    <section class="page" id="moods"><div class="page-head"><h1>Moods</h1><p>A simple check-in, without judgement.</p></div><div class="grid"><article class="card half"><h2>Check in</h2><form id="mood-form"><label>Person<select name="partner"><option>${partner1}</option><option>${partner2}</option></select></label><label>Mood<select name="mood"><option>great</option><option>good</option><option>okay</option><option>tired</option><option>stressed</option><option>low</option></select></label><label>Note<textarea name="note" maxlength="2000"></textarea></label><button class="btn">Save mood</button></form></article><article class="card half"><h2>Recent moods</h2><div id="mood-list" class="stack"></div></article></div></section>
+    <section class="page" id="moods"><div class="page-head"><h1>Moods</h1><p>A simple check-in, without judgement.</p></div><div class="grid"><article class="card half"><h2>Check in</h2><form id="mood-form"><label>Person<select name="partner">${partnerOptions}</select></label><label>Mood<select name="mood"><option>great</option><option>good</option><option>okay</option><option>tired</option><option>stressed</option><option>low</option></select></label><label>Note<textarea name="note" maxlength="2000"></textarea></label><button class="btn">Save mood</button></form></article><article class="card half"><h2>Recent moods</h2><div id="mood-list" class="stack"></div></article></div></section>
 
-    <section class="page" id="notes"><div class="page-head"><h1>Notes</h1><p>Shared thoughts and captured reminders.</p></div><div class="grid"><article class="card half"><h2>Leave a note</h2><form id="note-form"><label>From<input name="from" maxlength="80" required value="${partner1}"></label><label>Note<textarea name="content" maxlength="4000" required></textarea></label><button class="btn">Save note</button></form></article><article class="card half"><h2>Recent notes</h2><div id="note-list" class="stack"></div></article></div></section>
+    <section class="page" id="notes"><div class="page-head"><h1>Notes</h1><p>Shared thoughts and captured reminders.</p></div><div class="grid"><article class="card half"><h2>Leave a note</h2><form id="note-form"><label>From<select name="from">${partnerOptions}</select></label><label>Note<textarea name="content" maxlength="4000" required></textarea></label><button class="btn">Save note</button></form></article><article class="card half"><h2>Recent notes</h2><div id="note-list" class="stack"></div></article></div></section>
 
     <section class="page" id="moments"><div class="page-head"><h1>Moments</h1><p>The small pieces worth remembering.</p></div><div class="grid"><article class="card half"><h2>Add a moment</h2><form id="moment-form"><label>Date<input type="date" name="date" required></label><label>Title<input name="title" maxlength="200" required></label><label>Description<textarea name="description" maxlength="4000"></textarea></label><button class="btn">Save moment</button></form></article><article class="card half"><h2>Timeline</h2><div id="moment-list" class="stack"></div></article></div></section>
 
     <section class="page" id="dates"><div class="page-head"><h1>Dates</h1><p>Important days, kept close.</p></div><div class="grid"><article class="card half"><h2>Add a date</h2><form id="date-form"><label>Date<input type="date" name="date" required></label><label>Title<input name="title" maxlength="200" required></label><label class="check"><input type="checkbox" name="recurring"> Repeats yearly</label><button class="btn">Save date</button></form></article><article class="card half"><h2>Upcoming</h2><div id="date-list" class="stack"></div></article></div></section>
 
-    <section class="page" id="shopping"><div class="page-head"><h1>Shopping</h1><p>One list, shared everywhere.</p></div><div class="grid"><article class="card half"><h2>Add an item</h2><form id="shopping-form"><label>Item<input name="item" maxlength="300" required></label><div class="form-grid"><label>Category<input name="category" maxlength="100" value="Other"></label><label>Added by<input name="added_by" maxlength="80" value="${partner1}"></label></div><button class="btn">Add to list</button></form></article><article class="card half"><h2>Shopping list</h2><div id="shopping-list" class="stack"></div><button id="clear-shopping" class="btn ghost small" type="button">Clear checked</button></article></div></section>
+    <section class="page" id="shopping"><div class="page-head"><h1>Shopping</h1><p>One list, shared everywhere.</p></div><div class="grid"><article class="card half"><h2>Add an item</h2><form id="shopping-form"><label>Item<input name="item" maxlength="300" required></label><div class="form-grid"><label>Category<input name="category" maxlength="100" value="Other"></label><label>Added by<select name="added_by">${partnerOptions}</select></label></div><button class="btn">Add to list</button></form></article><article class="card half"><h2>Shopping list</h2><div id="shopping-list" class="stack"></div><button id="clear-shopping" class="btn ghost small" type="button">Clear checked</button></article></div></section>
 
     <section class="page" id="medical"><div class="page-head"><h1>Medical</h1><p>Practical organisation for Crimson and Conrad—not a diagnostic record.</p></div><div class="subnav"><a href="#medical-appointments">Appointments</a><a href="#medical-medications">Medications</a><a href="#medical-doses">Taken today</a><a href="#medical-prescriptions">Prescriptions</a></div><div class="grid">
       <article class="card full" id="medical-appointments"><h2>Appointments</h2><div class="grid"><div class="card half"><form id="appointment-form"><input type="hidden" name="id"><div class="form-grid"><label>Person<select name="person"><option>Crimson</option><option>Conrad</option></select></label><label>Date<input type="date" name="appointment_date" required></label><label>Time<input type="time" name="appointment_time"></label><label>Status<select name="status"><option>Upcoming</option><option>Completed</option><option>Cancelled</option><option>Rescheduled</option></select></label><label>Location<input name="location" maxlength="300"></label><label>Clinic / hospital / GP<input name="clinic" maxlength="300"></label><label>Department or clinician<input name="clinician" maxlength="300"></label><label>Reason / type<input name="reason" maxlength="500" required></label><label class="span-2">Preparation<textarea name="preparation_needed" maxlength="1000"></textarea></label><label class="span-2">Notes<textarea name="notes" maxlength="4000"></textarea></label><label class="check span-2"><input type="checkbox" name="transport_needed"> Transport needed</label></div><div class="actions"><button class="btn">Save appointment</button><button type="button" class="btn ghost" data-reset="appointment-form">Clear</button></div></form></div><div class="card half"><div id="appointment-list" class="stack"></div></div></div></article>
@@ -85,10 +91,10 @@ export function getRedesignedDashboardHTML(config) {
       <article class="card half"><h2>Food review</h2><form id="review-form"><label>Date<input type="date" name="date" required></label><label>Reviewer<input name="reviewer" maxlength="80" value="AI"></label><label>Review<textarea name="review" maxlength="6000" required></textarea></label><button class="btn">Save review</button></form><div id="review-list" class="stack" style="margin-top:1rem"></div></article>
     </div></section>
   </main>
-  <footer>Hearth · private, practical, and yours · 1.1.4-crimson.1</footer>
+  <footer>Hearth · private, practical, and yours · 1.1.4-crimson.2</footer>
 </div>
 <script>
-  const PARTNERS=${inlineJson([config.PARTNER_1, config.PARTNER_2])};
+  const PARTNERS=${inlineJson(partners)};
   const state={appointments:[],medications:[],prescriptions:[],admin:[],mealPlan:[],savedMeals:[],chores:[],choreFilter:'today'};
   const $=id=>document.getElementById(id);
   const esc=value=>String(value==null?'':value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

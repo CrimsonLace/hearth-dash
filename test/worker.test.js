@@ -6,6 +6,7 @@ class FakeD1 {
   constructor() {
     this.counts = new Map();
     this.oauthCsrf = new Map();
+    this.statements = [];
   }
 
   prepare(sql) {
@@ -14,6 +15,7 @@ class FakeD1 {
       args: [],
       bind(...args) { this.args = args; return this; },
       async run() {
+        db.statements.push({ kind: 'run', sql, args: this.args });
         if (sql.startsWith('INSERT INTO rate_limits')) {
           const key = this.args[0];
           db.counts.set(key, (db.counts.get(key) || 0) + 1);
@@ -39,7 +41,10 @@ class FakeD1 {
         }
         return null;
       },
-      async all() { return { results: [] }; },
+      async all() {
+        db.statements.push({ kind: 'all', sql, args: this.args });
+        return { results: [] };
+      },
     };
   }
 }
@@ -103,6 +108,7 @@ test('implements MCP initialize and scoped tool discovery over JSON-RPC', async 
   const initBody = await initialized.json();
   assert.equal(initBody.result.protocolVersion, '2025-06-18');
   assert.deepEqual(initBody.result.capabilities, { tools: { listChanged: false } });
+  assert.equal(initBody.result.serverInfo.version, '1.1.4-crimson.2');
 
   const listed = await callMcp({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, env(), ['hearth:read'], { 'MCP-Protocol-Version': '2025-06-18' });
   const listBody = await listed.json();
@@ -124,6 +130,42 @@ test('calls an authorized read tool and returns MCP content', async () => {
   assert.equal(body.result.isError, false);
   assert.equal(body.result.content[0].type, 'text');
   assert.deepEqual(body.result.structuredContent.moods, { One: null, Two: null });
+});
+
+test('MCP status and mood support every configured partner and reject unknown names', async () => {
+  const testEnv = env({ PARTNER_3: 'Elijah' });
+  const status = await callMcp({
+    jsonrpc: '2.0', id: 30, method: 'tools/call',
+    params: { name: 'hearth_status', arguments: {} },
+  }, testEnv, ['hearth:read']);
+  assert.deepEqual((await status.json()).result.structuredContent.moods, { One: null, Two: null, Elijah: null });
+
+  const set = await callMcp({
+    jsonrpc: '2.0', id: 31, method: 'tools/call',
+    params: { name: 'hearth_mood', arguments: { action: 'set', partner: 'Elijah', mood: 'good' } },
+  }, testEnv, ['hearth:read', 'hearth:write']);
+  assert.equal((await set.json()).result.isError, false);
+  const insert = testEnv.DB.statements.find(statement => statement.sql.startsWith('INSERT INTO moods'));
+  assert.deepEqual(insert.args.slice(0, 2), ['Elijah', 'good']);
+
+  const rejected = await callMcp({
+    jsonrpc: '2.0', id: 32, method: 'tools/call',
+    params: { name: 'hearth_mood', arguments: { action: 'set', partner: 'Conrad', mood: 'good' } },
+  }, testEnv, ['hearth:read', 'hearth:write']);
+  const rejectedBody = await rejected.json();
+  assert.equal(rejectedBody.result.isError, true);
+  assert.match(rejectedBody.result.content[0].text, /configured Hearth partner/);
+});
+
+test('shopping MCP keeps the existing Partner 2 default used by Railway', async () => {
+  const testEnv = env({ PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: 'Elijah' });
+  const response = await callMcp({
+    jsonrpc: '2.0', id: 33, method: 'tools/call',
+    params: { name: 'hearth_shopping_add', arguments: { item: 'Cat litter' } },
+  }, testEnv, ['hearth:read', 'hearth:write']);
+  assert.equal((await response.json()).result.isError, false);
+  const insert = testEnv.DB.statements.find(statement => statement.sql.startsWith('INSERT INTO shopping'));
+  assert.deepEqual(insert.args, ['Cat litter', 'Other', 'Jace']);
 });
 
 test('enforces write scope and validates arguments before writes', async () => {
@@ -624,7 +666,7 @@ test('rate-limits authorization-page token creation', async () => {
 });
 
 test('escapes configured partner names in HTML and inline JavaScript', async () => {
-  const testEnv = env({ PARTNER_1: '</script><img src=x onerror=alert(1)>', PARTNER_2: "O'Malley" });
+  const testEnv = env({ PARTNER_1: '</script><img src=x onerror=alert(1)>', PARTNER_2: "O'Malley", PARTNER_3: '<svg onload=alert(2)>' });
   const form = new FormData();
   form.set('password', testEnv.DASHBOARD_PASSWORD);
   const login = await applicationHandler.fetch(new Request('https://hearth.example/login', {
@@ -636,6 +678,8 @@ test('escapes configured partner names in HTML and inline JavaScript', async () 
   assert.ok(!html.includes('</script><img src=x'));
   assert.ok(html.includes('&lt;/script&gt;&lt;img'));
   assert.ok(html.includes("O&#39;Malley"));
+  assert.ok(!html.includes('<svg onload=alert(2)>'));
+  assert.ok(html.includes('&lt;svg onload=alert(2)&gt;'));
 });
 
 test('returns 405 for authenticated MCP GET when no SSE stream is offered', async () => {

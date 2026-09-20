@@ -9,6 +9,7 @@ import {
   listD1Databases, listKvNamespaces,
 } from "../lib/wrangler.js";
 import { banner, step, bold, dim, cyan, green, yellow, red, success, fail, warn, info, spinner } from "../lib/ui.js";
+import { validatePartnerNames } from '../../partners.js';
 
 const TOTAL_STEPS = 6;
 const CONFIG_DIR = join(homedir(), ".hearth-dash");
@@ -84,9 +85,15 @@ export default async function deployCommand(args) {
 
   step(2, TOTAL_STEPS, "Configuration");
 
-  const partner1 = await ask("  Partner 1 name", "Partner 1");
-  const partner2 = await ask("  Partner 2 name (or AI name)", "AI");
-  if (partner1.length > 80 || partner2.length > 80) { fail("Partner names must be 80 characters or fewer."); process.exit(1); }
+  const partnerInputs = [
+    await ask("  Partner 1 name", "Partner 1"),
+    await ask("  Partner 2 name (or AI name)", "AI"),
+    await ask("  Partner 3 name (optional)"),
+  ];
+  let partners;
+  try { partners = validatePartnerNames(partnerInputs); }
+  catch (error) { fail(error.message); process.exit(1); }
+  const [partner1, partner2, partner3 = ''] = partners;
   const dashPassword = await password("  Dashboard password");
   if (!dashPassword || dashPassword.length < 12) { fail("Password must be at least 12 characters."); process.exit(1); }
   const { randomBytes } = await import('node:crypto');
@@ -119,7 +126,7 @@ export default async function deployCommand(args) {
 
   // Copy worker files to deploy dir
   const s1 = spinner("Copying source files");
-  for (const file of ["worker.js", "dashboard.js", "oauth-entry.js", "schema.sql", "wrangler.toml", "package.json"]) {
+  for (const file of ["worker.js", "dashboard.js", "partners.js", "oauth-entry.js", "schema.sql", "wrangler.toml", "package.json"]) {
     const src = join(pkgRoot, file);
     if (!existsSync(src)) { s1.fail(`Missing: ${file}`); process.exit(1); }
     writeFileSync(join(deployDir, file), readFileSync(src, "utf-8"), "utf-8");
@@ -164,6 +171,9 @@ export default async function deployCommand(args) {
   toml = toml.replace("YOUR_OAUTH_KV_ID", oauthKvId);
   toml = toml.replace('PARTNER_1 = "Partner 1"', `PARTNER_1 = ${JSON.stringify(partner1)}`);
   toml = toml.replace('PARTNER_2 = "Partner 2"', `PARTNER_2 = ${JSON.stringify(partner2)}`);
+  toml = toml.replace(/^PARTNER_3\s*=.*$/m, partner3
+    ? `PARTNER_3 = ${JSON.stringify(partner3)}`
+    : '# PARTNER_3 is optional; omit it for a two-partner Hearth');
   if (weatherLat) {
     toml = toml.replace('# WEATHER_LAT = "52.5726"', `WEATHER_LAT = "${weatherLat}"`);
     toml = toml.replace('# WEATHER_LON = "-0.2405"', `WEATHER_LON = "${weatherLon}"`);
@@ -246,6 +256,7 @@ export default async function deployCommand(args) {
     workerUrl,
     partner1,
     partner2,
+    partner3: partner3 || null,
     dbId,
     deployedAt: new Date().toISOString(),
   });
