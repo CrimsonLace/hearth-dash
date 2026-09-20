@@ -25,6 +25,73 @@ class RecordingD1 {
   }
 }
 
+class StatefulMedicalD1 {
+  constructor() {
+    this.medications = [];
+    this.doses = [];
+    this.nextMedicationId = 1;
+    this.nextDoseId = 1;
+  }
+
+  prepare(sql) {
+    const db = this;
+    return {
+      args: [],
+      bind(...args) { this.args = args; return this; },
+      async first() {
+        if (/SELECT \* FROM medications WHERE id/.test(sql)) {
+          return db.medications.find(item => item.id === this.args[0]) || null;
+        }
+        if (/SELECT id FROM medications WHERE id/.test(sql)) {
+          const item = db.medications.find(value => value.id === this.args[0]);
+          return item ? { id: item.id } : null;
+        }
+        if (/SELECT id FROM medication_doses/.test(sql)) {
+          const item = db.doses.find(value => value.medication_id === this.args[0] && value.scheduled_at === this.args[1]);
+          return item ? { id: item.id } : null;
+        }
+        return null;
+      },
+      async run() {
+        if (/INSERT INTO medications/.test(sql)) {
+          const [person, name, strength, dose, frequency, scheduledTimes, prescribingSource, notes, startDate] = this.args;
+          db.medications.push({
+            id: db.nextMedicationId++, person, name, strength, dose, frequency,
+            scheduled_times: scheduledTimes, prescribing_source: prescribingSource, notes,
+            active: 1, start_date: startDate, stopped_date: null, stopped_reason: null,
+          });
+        } else if (/UPDATE medications SET person/.test(sql)) {
+          const [person, name, strength, dose, frequency, scheduledTimes, prescribingSource, notes,
+            active, startDate, stoppedDate, stoppedReason, id] = this.args;
+          const item = db.medications.find(value => value.id === id);
+          Object.assign(item, {
+            person, name, strength, dose, frequency, scheduled_times: scheduledTimes,
+            prescribing_source: prescribingSource, notes, active, start_date: startDate,
+            stopped_date: stoppedDate, stopped_reason: stoppedReason,
+          });
+        } else if (/UPDATE medications SET active = 1/.test(sql)) {
+          const item = db.medications.find(value => value.id === this.args[0]);
+          Object.assign(item, { active: 1, stopped_date: null, stopped_reason: null });
+        } else if (/INSERT INTO medication_doses/.test(sql)) {
+          const [medicationId, person, medicationName, medicationStrength, medicationDose,
+            scheduledAt, actualTakenAt, status] = this.args;
+          if (db.doses.some(value => value.medication_id === medicationId && value.scheduled_at === scheduledAt)) {
+            throw new Error('UNIQUE constraint failed: medication_doses.medication_id, medication_doses.scheduled_at');
+          }
+          db.doses.push({
+            id: db.nextDoseId++, medication_id: medicationId, person,
+            medication_name: medicationName, medication_strength: medicationStrength,
+            medication_dose: medicationDose, scheduled_at: scheduledAt,
+            actual_taken_at: actualTakenAt, status, created_at: 'unchanged-created-at',
+          });
+        }
+        return { success: true };
+      },
+      async all() { return { results: [] }; },
+    };
+  }
+}
+
 const config = { PARTNER_1: 'One', PARTNER_2: 'Two' };
 
 function request(body, method = 'POST', path = '/api/test') {
@@ -46,6 +113,19 @@ test('renders the warm responsive dashboard without visible weather or pressure 
   assert.doesNotMatch(html, /data-page="pressure"/);
   assert.doesNotMatch(html, /<\/script><b>Crimson/);
   assert.match(html, /O&#39;Malley/);
+  assert.match(html, /1\.1\.4-crimson\.1/);
+});
+
+test('fork documentation never presents the upstream package as an executable command', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const publishedCommand = ['npx', 'hearth-dash'].join(' ');
+  const operationalLines = readme.split(/\r?\n/).filter(line => line.trim().startsWith(publishedCommand));
+  assert.deepEqual(operationalLines, []);
+  assert.match(readme, /Do not use[^\n]*hearth-dash@latest deploy/);
+  assert.match(readme, /CrimsonLace\/hearth-dash/);
+  assert.equal(packageJson.version, '1.1.4-crimson.1');
+  assert.equal(packageJson.private, true);
 });
 
 test('validates scheduled medication times and calculates daily progress', () => {
@@ -76,6 +156,11 @@ test('creates and edits a medical appointment while keeping medical people indep
 
   const rejected = await handleAPI(request({ ...body, person: 'Elijah' }), { DB: db }, '/medical/appointments', config);
   assert.equal(rejected.status, 400);
+
+  for (const appointment_time of ['24:00', '9:30', '12:60']) {
+    const invalidTime = await handleAPI(request({ ...body, appointment_time }), { DB: db }, '/medical/appointments', config);
+    assert.equal(invalidTime.status, 400, appointment_time);
+  }
 });
 
 test('medication edits do not rewrite historical dose snapshots', async () => {
@@ -89,10 +174,66 @@ test('medication edits do not rewrite historical dose snapshots', async () => {
   };
   assert.equal((await handleAPI(request(edit, 'PUT'), { DB: db }, '/medical/medications/4', config)).status, 200);
   assert.equal((await handleAPI(request({ medication_id: 4, scheduled_at: '2026-09-20T08:00', status: 'Taken' }), { DB: db }, '/medical/doses', config)).status, 200);
-  const doseInsert = db.statements.find(entry => entry.sql.includes('INSERT OR REPLACE INTO medication_doses'));
+  const doseInsert = db.statements.find(entry => entry.sql.includes('INSERT INTO medication_doses'));
   assert.ok(doseInsert);
   assert.deepEqual(doseInsert.args.slice(0, 5), [4, 'Conrad', 'Medicine A', '10mg', 'one tablet']);
   assert.ok(!db.statements.some(entry => /UPDATE medication_doses/.test(entry.sql)));
+});
+
+test('duplicate dose submissions cannot replace immutable history', async () => {
+  const db = new StatefulMedicalD1();
+  db.medications.push({
+    id: 4, person: 'Conrad', name: 'Medicine A', strength: '10mg', dose: 'one tablet',
+    frequency: 'Daily', scheduled_times: '["08:00"]', active: 1, start_date: '2026-09-01',
+    stopped_date: null, stopped_reason: null,
+  });
+  const first = await handleAPI(request({
+    medication_id: 4, scheduled_at: '2026-09-20T08:00', status: 'Taken',
+  }), { DB: db }, '/medical/doses', config);
+  assert.equal(first.status, 200);
+  const original = structuredClone(db.doses[0]);
+
+  db.medications[0].name = 'Medicine B';
+  db.medications[0].strength = '20mg';
+  db.medications[0].dose = 'two tablets';
+  const duplicate = await handleAPI(request({
+    medication_id: 4, scheduled_at: '2026-09-20T08:00', status: 'Skipped',
+  }), { DB: db }, '/medical/doses', config);
+  assert.equal(duplicate.status, 409);
+  assert.deepEqual(await duplicate.json(), { error: 'Dose already recorded' });
+  assert.equal(db.doses.length, 1);
+  assert.deepEqual(db.doses[0], original);
+});
+
+test('editing a stopped medication preserves stop state until explicit reactivation', async () => {
+  const db = new StatefulMedicalD1();
+  const created = await handleAPI(request({
+    person: 'Crimson', name: 'Medicine A', strength: '10mg', dose: 'one tablet', frequency: 'Daily',
+    scheduled_times: ['08:00'], start_date: '2026-09-01', notes: 'Original',
+  }), { DB: db }, '/medical/medications', config);
+  assert.equal(created.status, 200);
+  assert.equal(db.medications[0].active, 1);
+
+  const stopped = await handleAPI(request({
+    ...db.medications[0], active: false, stopped_date: '2026-09-18', stopped_reason: 'Clinician advice',
+  }, 'PUT'), { DB: db }, '/medical/medications/1', config);
+  assert.equal(stopped.status, 200);
+  assert.equal(db.medications[0].active, 0);
+
+  const edited = await handleAPI(request({
+    person: 'Crimson', name: 'Medicine A revised', strength: '10mg', dose: 'half tablet', frequency: 'Daily',
+    scheduled_times: ['08:00'], start_date: '2026-09-01', notes: 'Edited while stopped',
+  }, 'PUT'), { DB: db }, '/medical/medications/1', config);
+  assert.equal(edited.status, 200);
+  assert.equal(db.medications[0].active, 0);
+  assert.equal(db.medications[0].stopped_date, '2026-09-18');
+  assert.equal(db.medications[0].stopped_reason, 'Clinician advice');
+
+  const reactivated = await handleAPI(request({}, 'POST'), { DB: db }, '/medical/medications/1/reactivate', config);
+  assert.equal(reactivated.status, 200);
+  assert.equal(db.medications[0].active, 1);
+  assert.equal(db.medications[0].stopped_date, null);
+  assert.equal(db.medications[0].stopped_reason, null);
 });
 
 test('creates prescription renewal state independently from dose history', async () => {

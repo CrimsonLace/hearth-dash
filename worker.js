@@ -1166,7 +1166,7 @@ export async function handleAPI(request, env, endpoint, config) {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(
           requireChoice(b.person, 'person', MEDICAL_PEOPLE), requireIsoDateValue(b.appointment_date, 'appointment_date'),
-          optionalTextValue(b.appointment_time, 5, 'appointment_time'), optionalTextValue(b.location, 300, 'location'),
+          optionalTimeValue(b.appointment_time, 'appointment_time'), optionalTextValue(b.location, 300, 'location'),
           optionalTextValue(b.clinic, 300, 'clinic'), optionalTextValue(b.clinician, 300, 'clinician'),
           requireText(b, 'reason', 500), optionalTextValue(b.notes, 4000, 'notes'),
           requireChoice(b.status || 'Upcoming', 'status', APPOINTMENT_STATUSES), b.transport_needed === true ? 1 : 0,
@@ -1181,7 +1181,7 @@ export async function handleAPI(request, env, endpoint, config) {
         clinic = ?, clinician = ?, reason = ?, notes = ?, status = ?, transport_needed = ?, preparation_needed = ?, updated_at = datetime("now") WHERE id = ?`)
         .bind(
           requireChoice(b.person, 'person', MEDICAL_PEOPLE), requireIsoDateValue(b.appointment_date, 'appointment_date'),
-          optionalTextValue(b.appointment_time, 5, 'appointment_time'), optionalTextValue(b.location, 300, 'location'),
+          optionalTimeValue(b.appointment_time, 'appointment_time'), optionalTextValue(b.location, 300, 'location'),
           optionalTextValue(b.clinic, 300, 'clinic'), optionalTextValue(b.clinician, 300, 'clinician'),
           requireText(b, 'reason', 500), optionalTextValue(b.notes, 4000, 'notes'),
           requireChoice(b.status, 'status', APPOINTMENT_STATUSES), b.transport_needed === true ? 1 : 0,
@@ -1211,7 +1211,19 @@ export async function handleAPI(request, env, endpoint, config) {
     const medicationMatch = endpoint.match(/^\/medical\/medications\/(\d+)$/);
     if (medicationMatch && method === 'PUT') {
       const b = await readJsonObject(request);
-      const active = b.active !== false;
+      const medicationId = +medicationMatch[1];
+      const existing = await env.DB.prepare('SELECT * FROM medications WHERE id = ?').bind(medicationId).first();
+      if (!existing) throw Object.assign(new Error('Medication not found'), { status: 404 });
+      if (b.active !== undefined && typeof b.active !== 'boolean') throw inputError('active must be true or false');
+      const active = b.active === undefined ? Boolean(existing.active) : b.active === true;
+      const stoppedDate = active
+        ? null
+        : requireIsoDateValue(b.stopped_date || existing.stopped_date || new Date().toISOString().slice(0, 10), 'stopped_date');
+      const stoppedReason = active
+        ? null
+        : (b.stopped_reason === undefined
+          ? optionalTextValue(existing.stopped_reason, 1000, 'stopped_reason')
+          : optionalTextValue(b.stopped_reason, 1000, 'stopped_reason'));
       await env.DB.prepare(`UPDATE medications SET person = ?, name = ?, strength = ?, dose = ?, frequency = ?, scheduled_times = ?,
         prescribing_source = ?, notes = ?, active = ?, start_date = ?, stopped_date = ?, stopped_reason = ?, updated_at = datetime("now") WHERE id = ?`)
         .bind(
@@ -1219,9 +1231,17 @@ export async function handleAPI(request, env, endpoint, config) {
           optionalTextValue(b.strength, 100, 'strength'), requireText(b, 'dose', 200), requireText(b, 'frequency', 200),
           JSON.stringify(parseScheduledTimes(b.scheduled_times)), optionalTextValue(b.prescribing_source, 300, 'prescribing_source'),
           optionalTextValue(b.notes, 4000, 'notes'), active ? 1 : 0, requireIsoDateValue(b.start_date, 'start_date'),
-          active ? null : requireIsoDateValue(b.stopped_date || new Date().toISOString().slice(0, 10), 'stopped_date'),
-          active ? null : optionalTextValue(b.stopped_reason, 1000, 'stopped_reason'), +medicationMatch[1],
+          stoppedDate, stoppedReason, medicationId,
         ).run();
+      return json({ success: true });
+    }
+    const medicationReactivateMatch = endpoint.match(/^\/medical\/medications\/(\d+)\/reactivate$/);
+    if (medicationReactivateMatch && method === 'POST') {
+      const medicationId = +medicationReactivateMatch[1];
+      const existing = await env.DB.prepare('SELECT id FROM medications WHERE id = ?').bind(medicationId).first();
+      if (!existing) throw Object.assign(new Error('Medication not found'), { status: 404 });
+      await env.DB.prepare('UPDATE medications SET active = 1, stopped_date = NULL, stopped_reason = NULL, updated_at = datetime("now") WHERE id = ?')
+        .bind(medicationId).run();
       return json({ success: true });
     }
 
@@ -1240,11 +1260,19 @@ export async function handleAPI(request, env, endpoint, config) {
       if (!medication) throw Object.assign(new Error('Medication not found'), { status: 404 });
       const scheduledAt = requireDateTimeValue(b.scheduled_at || new Date().toISOString().slice(0, 16), 'scheduled_at');
       const status = requireChoice(b.status || 'Taken', 'status', DOSE_STATUSES);
-      await env.DB.prepare(`INSERT OR REPLACE INTO medication_doses
-        (medication_id, person, medication_name, medication_strength, medication_dose, scheduled_at, actual_taken_at, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime("now"))`)
-        .bind(medication.id, medication.person, medication.name, medication.strength || null, medication.dose,
-          scheduledAt, status === 'Taken' ? new Date().toISOString() : null, status).run();
+      const existingDose = await env.DB.prepare('SELECT id FROM medication_doses WHERE medication_id = ? AND scheduled_at = ?')
+        .bind(medication.id, scheduledAt).first();
+      if (existingDose) throw Object.assign(new Error('Dose already recorded'), { status: 409 });
+      try {
+        await env.DB.prepare(`INSERT INTO medication_doses
+          (medication_id, person, medication_name, medication_strength, medication_dose, scheduled_at, actual_taken_at, status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime("now"))`)
+          .bind(medication.id, medication.person, medication.name, medication.strength || null, medication.dose,
+            scheduledAt, status === 'Taken' ? new Date().toISOString() : null, status).run();
+      } catch (error) {
+        if (isDoseSlotConflict(error)) throw Object.assign(new Error('Dose already recorded'), { status: 409 });
+        throw error;
+      }
       return json({ success: true });
     }
 
@@ -1958,6 +1986,24 @@ function optionalTextValue(value, maxLength, name) {
   const trimmed = value.trim();
   if (trimmed.length > maxLength) throw inputError(`${name} is too long`);
   return trimmed || null;
+}
+
+function optionalTimeValue(value, name) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    throw inputError(`${name} must use HH:MM in 24-hour time`);
+  }
+  return value;
+}
+
+function isDoseSlotConflict(error) {
+  let current = error;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    const message = current instanceof Error ? current.message : String(current);
+    if (/UNIQUE constraint failed:\s*medication_doses\.medication_id,\s*medication_doses\.scheduled_at/i.test(message)) return true;
+    current = current instanceof Error ? current.cause : null;
+  }
+  return false;
 }
 
 function requireIsoDateValue(value, name) {

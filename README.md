@@ -14,8 +14,11 @@ Hearth is a small personal dashboard for two people. It runs as a Cloudflare Wor
 
 > **CrimsonLace custom fork.** This repository preserves attribution to the original
 > [`martusha89/hearth-dash`](https://github.com/martusha89/hearth-dash) project while
-> carrying a private-life dashboard redesign. Do not use `npx hearth-dash@latest deploy`
-> for this fork: that command installs the upstream npm package, not this source tree.
+> carrying a private-life dashboard redesign. The upstream repository is read-only for this
+> installation. **Do not use `npx hearth-dash@latest deploy`**: customized deployments must
+> run from a checked-out copy of `CrimsonLace/hearth-dash`.
+
+This fork identifies itself as **1.1.4-crimson.1** without publishing an npm package.
 
 ## Features
 
@@ -61,13 +64,13 @@ schema. Back up the production D1 database before a production migration.
 
 The local `node cli/index.js deploy` command also applies pending migrations before Worker
 activation, but it is the full provisioning wizard and may prompt for secrets. Never substitute
-`npx hearth-dash@latest deploy`; that is Marta's published upstream build.
+a globally resolved or published-package CLI; always execute commands from this checkout.
 
 ### Bundled CLI
 
 ```bash
-npx hearth-dash deploy
-npx hearth-dash mcp
+node cli/index.js deploy
+node cli/index.js mcp
 ```
 
 The deploy command creates the D1 database, R2 bucket and OAuth KV namespace; installs the pinned runtime dependency; prompts for configuration; generates a session-signing secret; applies the schema; and deploys the Worker. It does not save the dashboard password locally.
@@ -105,7 +108,7 @@ Configuration lives in `wrangler.toml`: partner names under `[vars]`, the D1 bin
 
 ## Connect Claude
 
-After deployment, run `npx hearth-dash mcp`. The connector URL is:
+After deployment, run `node cli/index.js mcp` from this checkout. The connector URL is:
 
 ```text
 https://your-worker.example/mcp
@@ -151,7 +154,7 @@ The first-visit password setup page has also been removed. A public, unclaimed s
 
 ### 1.1.1 dashboard-login fix
 
-Version 1.1.1 keeps ordinary dashboard, login and API requests outside the OAuth provider and makes same-origin form validation resilient when a trusted Cloudflare wrapper reconstructs the internal request URL. Cross-site browser submissions remain rejected. Upgrade with `npx hearth-dash@latest deploy` if a 1.1.0 deployment returns plain `Forbidden` after submitting `/login`.
+Version 1.1.1 keeps ordinary dashboard, login and API requests outside the OAuth provider and makes same-origin form validation resilient when a trusted Cloudflare wrapper reconstructs the internal request URL. Cross-site browser submissions remain rejected. Fork deployments must apply upgrades from this checked-out source tree.
 
 ### 1.1.2 Chrome null-Origin fix
 

@@ -76,6 +76,13 @@ test('selects numbered migrations once and in order', async () => {
   assert.deepEqual(calls, ['apply:002_second.sql', 'record:002_second']);
 });
 
+test('fails closed when the remote migration ledger is malformed or unexpected', () => {
+  assert.throws(() => parseAppliedMigrations('not-json'), /Could not parse the remote migration ledger response/);
+  assert.throws(() => parseAppliedMigrations(JSON.stringify({ success: true })), /unexpected shape/);
+  assert.throws(() => parseAppliedMigrations(JSON.stringify([{ results: [{ version: null }] }])), /invalid version/);
+  assert.deepEqual(parseAppliedMigrations(JSON.stringify([{ results: [] }])), new Set());
+});
+
 test('stops migration processing before recording a failed migration', async () => {
   const calls = [];
   const result = await applyPendingMigrations({

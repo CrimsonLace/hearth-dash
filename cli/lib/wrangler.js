@@ -81,13 +81,21 @@ export async function executeSchema(dbName, schemaPath, cwd) {
 }
 
 export function parseAppliedMigrations(output) {
+  let parsed;
   try {
-    const parsed = JSON.parse(output);
-    const envelopes = Array.isArray(parsed) ? parsed : [parsed];
-    return new Set(envelopes.flatMap(item => item?.results || []).map(row => String(row.version)));
-  } catch {
-    return new Set();
+    parsed = JSON.parse(output);
+  } catch (error) {
+    throw new Error('Could not parse the remote migration ledger response.', { cause: error });
   }
+  const envelopes = Array.isArray(parsed) ? parsed : [parsed];
+  if (!envelopes.length || envelopes.some(item => !item || typeof item !== 'object' || !Array.isArray(item.results))) {
+    throw new Error('The remote migration ledger response had an unexpected shape.');
+  }
+  const rows = envelopes.flatMap(item => item.results);
+  if (rows.some(row => !row || typeof row.version !== 'string' || !row.version)) {
+    throw new Error('The remote migration ledger response contained an invalid version.');
+  }
+  return new Set(rows.map(row => row.version));
 }
 
 export function pendingMigrationFiles(files, applied) {
@@ -122,10 +130,17 @@ export async function runMigrations(dbName, migrationsDir, cwd) {
   ], cwd);
   if (listed.code !== 0) return { ok: false, error: listed.stderr || listed.stdout };
 
+  let applied;
+  try {
+    applied = parseAppliedMigrations(listed.stdout);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Could not read the remote migration ledger.' };
+  }
+
   const files = readdirSync(migrationsDir);
   return applyPendingMigrations({
     files,
-    applied: parseAppliedMigrations(listed.stdout),
+    applied,
     applyFile: file => executeSchema(dbName, join(migrationsDir, file), cwd),
     async record(version) {
       const escaped = version.replaceAll("'", "''");

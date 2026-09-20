@@ -9,7 +9,7 @@ export default async function configCommand(args) {
   banner();
 
   if (!existsSync(CONFIG_PATH)) {
-    warn("No config found. Run 'hearth-dash deploy' first.");
+    warn("No config found. Run 'node cli/index.js deploy' from this checkout first.");
     process.exit(1);
   }
 
