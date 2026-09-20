@@ -1,6 +1,7 @@
 {
   "name": "hearth-dash",
   "version": "1.1.4",
+  "private": true,
   "description": "Personal dashboard — moods, moments, food diary, weather, and more. Deploy to Cloudflare in one command.",
   "type": "module",
   "bin": {
@@ -26,15 +27,17 @@
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/martusha89/hearth-dash.git"
+    "url": "git+https://github.com/CrimsonLace/hearth-dash.git"
   },
   "engines": {
     "node": ">=22"
   },
   "files": [
     "worker.js",
+    "dashboard.js",
     "oauth-entry.js",
     "schema.sql",
+    "migrations/",
     "wrangler.toml",
     "cli/",
     "README.md",

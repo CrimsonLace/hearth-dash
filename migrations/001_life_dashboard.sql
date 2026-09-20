@@ -1,114 +1,5 @@
--- Hearth Dash — Database Schema
--- Deploy: npx wrangler d1 execute hearth-dash-db --file schema.sql
-
-CREATE TABLE IF NOT EXISTS config (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
--- v1.0.1's first-visit setup stored the dashboard password as plaintext.
--- Authentication now uses Cloudflare Worker secrets; remove any legacy copy.
-DELETE FROM config WHERE key = 'password';
-
-CREATE TABLE IF NOT EXISTS moods (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  partner TEXT NOT NULL,
-  mood TEXT NOT NULL,
-  note TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS notes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  from_partner TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS moments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT NOT NULL,
-  title TEXT NOT NULL,
-  description TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS dates (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT NOT NULL,
-  title TEXT NOT NULL,
-  recurring INTEGER DEFAULT 0,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS shopping (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  item TEXT NOT NULL,
-  category TEXT DEFAULT 'Other',
-  checked INTEGER DEFAULT 0,
-  added_by TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS pressure_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  pressure_hpa REAL NOT NULL,
-  temp REAL,
-  recorded_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_pressure_recorded ON pressure_log(recorded_at);
-
-CREATE TABLE IF NOT EXISTS food_diary (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT NOT NULL,
-  time TEXT NOT NULL,
-  meal_type TEXT NOT NULL,
-  note TEXT,
-  photo_key TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_food_diary_date ON food_diary(date);
-
-CREATE TABLE IF NOT EXISTS water_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT NOT NULL,
-  amount_ml INTEGER NOT NULL,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_water_log_date ON water_log(date);
-
-CREATE TABLE IF NOT EXISTS food_reviews (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT UNIQUE NOT NULL,
-  review TEXT NOT NULL,
-  reviewer TEXT NOT NULL DEFAULT 'AI',
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_food_reviews_date ON food_reviews(date);
-
--- Coarse per-IP request buckets. IP addresses are hashed before storage.
-CREATE TABLE IF NOT EXISTS rate_limits (
-  bucket_key TEXT PRIMARY KEY,
-  count INTEGER NOT NULL DEFAULT 1,
-  expires_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_rate_limits_expires ON rate_limits(expires_at);
-
--- Short-lived, single-use OAuth authorization transactions. D1 provides an
--- atomic DELETE ... RETURNING consume step so consent forms cannot be replayed.
-CREATE TABLE IF NOT EXISTS oauth_csrf_tokens (
-  token TEXT PRIMARY KEY,
-  request_fingerprint TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_oauth_csrf_expires ON oauth_csrf_tokens(expires_at);
-
--- Ordered migrations are recorded here. Fresh installations include the
--- current schema snapshot and mark the matching migration as already applied.
-CREATE TABLE IF NOT EXISTS hearth_migrations (
-  version TEXT PRIMARY KEY,
-  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+-- Hearth custom fork: light personal-life dashboard entities.
+-- This migration is additive and intentionally preserves every existing table.
 
 CREATE TABLE IF NOT EXISTS medical_appointments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,7 +39,6 @@ CREATE TABLE IF NOT EXISTS medications (
 );
 CREATE INDEX IF NOT EXISTS idx_medications_person_active ON medications(person, active);
 
--- Snapshot fields preserve dose history if a medication definition is edited.
 CREATE TABLE IF NOT EXISTS medication_doses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   medication_id INTEGER NOT NULL,

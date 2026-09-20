@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  hasRequiredOAuthCsrfColumns, hasRequiredSchemaTables, parseD1CreateOutput, parseDeployOutput,
-  parseKvCreateOutput, provisionAfterVerifiedSchema,
+  applyPendingMigrations, hasRequiredOAuthCsrfColumns, hasRequiredSchemaTables, parseAppliedMigrations,
+  parseD1CreateOutput, parseDeployOutput, parseKvCreateOutput, pendingMigrationFiles, provisionAfterVerifiedSchema,
 } from '../cli/lib/wrangler.js';
 
 test('parses Cloudflare storage and deployment output', () => {
@@ -57,4 +57,34 @@ test('never provisions code before schema application and verification', async (
     assert.equal(result.ok, false);
     assert.ok(!calls.includes('provision'), failure);
   }
+});
+
+test('selects numbered migrations once and in order', async () => {
+  const applied = parseAppliedMigrations(JSON.stringify([{ results: [{ version: '001_first' }] }]));
+  assert.deepEqual(pendingMigrationFiles([
+    'README.md', '003_third.sql', '001_first.sql', '002_second.sql',
+  ], applied), ['002_second.sql', '003_third.sql']);
+
+  const calls = [];
+  const result = await applyPendingMigrations({
+    files: ['002_second.sql', '001_first.sql'],
+    applied: new Set(['001_first']),
+    async applyFile(file) { calls.push(`apply:${file}`); return { ok: true }; },
+    async record(version) { calls.push(`record:${version}`); return { ok: true }; },
+  });
+  assert.deepEqual(result, { ok: true, applied: ['002_second'] });
+  assert.deepEqual(calls, ['apply:002_second.sql', 'record:002_second']);
+});
+
+test('stops migration processing before recording a failed migration', async () => {
+  const calls = [];
+  const result = await applyPendingMigrations({
+    files: ['001_first.sql', '002_second.sql'],
+    applied: new Set(),
+    async applyFile(file) { calls.push(file); return { ok: file !== '001_first.sql', error: 'boom' }; },
+    async record(version) { calls.push(`record:${version}`); return { ok: true }; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.version, '001_first');
+  assert.deepEqual(calls, ['001_first.sql']);
 });

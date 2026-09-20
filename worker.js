@@ -1,9 +1,11 @@
+import { getRedesignedDashboardHTML } from './dashboard.js';
+
 /**
  * Hearth Dash — Personal Dashboard
  * Cloudflare Worker with D1 Database + R2 Photos + MCP Endpoint
  *
  * Deploy: npx wrangler deploy
- * Docs: https://github.com/martusha89/hearth-dash
+ * Custom fork: https://github.com/CrimsonLace/hearth-dash
  */
 
 const encoder = new TextEncoder();
@@ -718,7 +720,7 @@ export const applicationHandler = {
     }
     if (path.startsWith('/api/')) return handleAPI(request, env, path.substring(4), config);
 
-    return new Response(getDashboardHTML(config), { headers: securityHeaders({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }) });
+    return new Response(getRedesignedDashboardHTML(config), { headers: securityHeaders({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }) });
   }
 };
 
@@ -953,24 +955,54 @@ export default applicationHandler;
 
 /* ========================= REST API ========================= */
 
-async function handleAPI(request, env, endpoint, config) {
+export async function handleAPI(request, env, endpoint, config) {
   const method = request.method;
   try {
     /* Dashboard */
     if (endpoint === '/dashboard' && method === 'GET') {
-      const [moodsP1, moodsP2, latestNote, nextDate, shoppingCount, todayMeals, todayWater] = await Promise.all([
+      const [
+        moodsP1, moodsP2, latestNote, nextDate, shoppingCount, todayMeals, todayWater,
+        nextMedical, medications, todayDoses, renewals, chores, adminItems,
+        shoppingPreview, latestMoment, tonightMeal,
+      ] = await Promise.all([
         env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(config.PARTNER_1).first(),
         env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(config.PARTNER_2).first(),
         env.DB.prepare('SELECT * FROM notes ORDER BY created_at DESC LIMIT 1').first(),
         env.DB.prepare('SELECT * FROM dates WHERE date >= date("now") ORDER BY date ASC LIMIT 1').first(),
         env.DB.prepare('SELECT COUNT(*) as cnt FROM shopping WHERE checked = 0').first(),
         env.DB.prepare("SELECT * FROM food_diary WHERE date = date('now') ORDER BY time ASC").all(),
-        env.DB.prepare("SELECT SUM(amount_ml) as total FROM water_log WHERE date = date('now')").first()
+        env.DB.prepare("SELECT SUM(amount_ml) as total FROM water_log WHERE date = date('now')").first(),
+        env.DB.prepare("SELECT * FROM medical_appointments WHERE status = 'Upcoming' AND appointment_date >= date('now') ORDER BY appointment_date, appointment_time LIMIT 1").first(),
+        env.DB.prepare('SELECT * FROM medications WHERE active = 1 ORDER BY person, name').all(),
+        env.DB.prepare("SELECT * FROM medication_doses WHERE date(scheduled_at) = date('now') ORDER BY scheduled_at").all(),
+        env.DB.prepare("SELECT * FROM prescription_renewals WHERE status != 'Collected' AND next_order_date IS NOT NULL AND next_order_date <= date('now', '+14 days') ORDER BY next_order_date").all(),
+        env.DB.prepare("SELECT * FROM household_chores WHERE done = 0 AND next_due_date <= date('now') ORDER BY next_due_date").all(),
+        env.DB.prepare("SELECT * FROM home_admin WHERE status != 'Done' AND due_date <= date('now', '+14 days') ORDER BY due_date").all(),
+        env.DB.prepare('SELECT * FROM shopping WHERE checked = 0 ORDER BY created_at DESC LIMIT 5').all(),
+        env.DB.prepare('SELECT * FROM moments ORDER BY created_at DESC LIMIT 1').first(),
+        env.DB.prepare("SELECT * FROM meal_plan WHERE plan_date = date('now') LIMIT 1").first(),
       ]);
       const moods = {};
       moods[config.PARTNER_1] = moodsP1;
       moods[config.PARTNER_2] = moodsP2;
-      return json({ moods, latestNote, nextDate, shoppingCount: shoppingCount ? shoppingCount.cnt : 0, todayMeals: todayMeals.results || [], waterTotal: todayWater ? todayWater.total || 0 : 0 });
+      const medicationProgress = medicationProgressForToday(medications.results || [], todayDoses.results || []);
+      const dueChores = chores.results || [];
+      const today = new Date().toISOString().slice(0, 10);
+      const latest = !latestMoment || (latestNote?.created_at || '') >= (latestMoment.created_at || '')
+        ? (latestNote ? { type: 'Note', title: latestNote.content, created_at: latestNote.created_at } : null)
+        : { type: 'Moment', title: latestMoment.title, created_at: latestMoment.created_at };
+      return json({
+        moods, latestNote, nextDate, shoppingCount: shoppingCount ? shoppingCount.cnt : 0,
+        todayMeals: todayMeals.results || [], waterTotal: todayWater ? todayWater.total || 0 : 0,
+        nextMedical, medicationProgress, renewals: renewals.results || [],
+        household: {
+          dueToday: dueChores.filter(item => item.next_due_date === today).length,
+          overdue: dueChores.filter(item => item.next_due_date < today).length,
+          items: dueChores,
+        },
+        homeAdmin: adminItems.results || [], shoppingPreview: shoppingPreview.results || [],
+        latest, tonightMeal,
+      });
     }
 
     /* Moods */
@@ -1111,6 +1143,233 @@ async function handleAPI(request, env, endpoint, config) {
     if (endpoint === '/food/reviews' && method === 'POST') {
       const b = await readJsonObject(request);
       await env.DB.prepare('INSERT OR REPLACE INTO food_reviews (date, review, reviewer, created_at) VALUES (?, ?, ?, datetime("now"))').bind(requireDate(b), requireText(b, 'review', 6000), b.reviewer ? requireText(b, 'reviewer', 80) : 'AI').run();
+      return json({ success: true });
+    }
+
+    /* Quick Capture (stored as an ordinary note, not a parallel inbox) */
+    if (endpoint === '/quick-capture' && method === 'POST') {
+      const b = await readJsonObject(request);
+      await env.DB.prepare('INSERT INTO notes (from_partner, content, created_at) VALUES (?, ?, datetime("now"))')
+        .bind('Quick Capture', requireText(b, 'content', 4000)).run();
+      return json({ success: true });
+    }
+
+    /* Medical: people here are intentionally independent of Hearth partners. */
+    if (endpoint === '/medical/appointments' && method === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM medical_appointments ORDER BY appointment_date DESC, appointment_time DESC').all();
+      return json({ appointments: r.results || [] });
+    }
+    if (endpoint === '/medical/appointments' && method === 'POST') {
+      const b = await readJsonObject(request);
+      await env.DB.prepare(`INSERT INTO medical_appointments
+        (person, appointment_date, appointment_time, location, clinic, clinician, reason, notes, status, transport_needed, preparation_needed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(
+          requireChoice(b.person, 'person', MEDICAL_PEOPLE), requireIsoDateValue(b.appointment_date, 'appointment_date'),
+          optionalTextValue(b.appointment_time, 5, 'appointment_time'), optionalTextValue(b.location, 300, 'location'),
+          optionalTextValue(b.clinic, 300, 'clinic'), optionalTextValue(b.clinician, 300, 'clinician'),
+          requireText(b, 'reason', 500), optionalTextValue(b.notes, 4000, 'notes'),
+          requireChoice(b.status || 'Upcoming', 'status', APPOINTMENT_STATUSES), b.transport_needed === true ? 1 : 0,
+          optionalTextValue(b.preparation_needed, 1000, 'preparation_needed'),
+        ).run();
+      return json({ success: true });
+    }
+    const appointmentMatch = endpoint.match(/^\/medical\/appointments\/(\d+)$/);
+    if (appointmentMatch && method === 'PUT') {
+      const b = await readJsonObject(request);
+      await env.DB.prepare(`UPDATE medical_appointments SET person = ?, appointment_date = ?, appointment_time = ?, location = ?,
+        clinic = ?, clinician = ?, reason = ?, notes = ?, status = ?, transport_needed = ?, preparation_needed = ?, updated_at = datetime("now") WHERE id = ?`)
+        .bind(
+          requireChoice(b.person, 'person', MEDICAL_PEOPLE), requireIsoDateValue(b.appointment_date, 'appointment_date'),
+          optionalTextValue(b.appointment_time, 5, 'appointment_time'), optionalTextValue(b.location, 300, 'location'),
+          optionalTextValue(b.clinic, 300, 'clinic'), optionalTextValue(b.clinician, 300, 'clinician'),
+          requireText(b, 'reason', 500), optionalTextValue(b.notes, 4000, 'notes'),
+          requireChoice(b.status, 'status', APPOINTMENT_STATUSES), b.transport_needed === true ? 1 : 0,
+          optionalTextValue(b.preparation_needed, 1000, 'preparation_needed'), +appointmentMatch[1],
+        ).run();
+      return json({ success: true });
+    }
+
+    if (endpoint === '/medical/medications' && method === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM medications ORDER BY active DESC, person, name').all();
+      return json({ medications: (r.results || []).map(row => ({ ...row, scheduled_times: parseScheduledTimes(row.scheduled_times) })) });
+    }
+    if (endpoint === '/medical/medications' && method === 'POST') {
+      const b = await readJsonObject(request);
+      const times = parseScheduledTimes(b.scheduled_times);
+      await env.DB.prepare(`INSERT INTO medications
+        (person, name, strength, dose, frequency, scheduled_times, prescribing_source, notes, active, start_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`)
+        .bind(
+          requireChoice(b.person, 'person', MEDICAL_PEOPLE), requireText(b, 'name', 300),
+          optionalTextValue(b.strength, 100, 'strength'), requireText(b, 'dose', 200), requireText(b, 'frequency', 200),
+          JSON.stringify(times), optionalTextValue(b.prescribing_source, 300, 'prescribing_source'),
+          optionalTextValue(b.notes, 4000, 'notes'), requireIsoDateValue(b.start_date, 'start_date'),
+        ).run();
+      return json({ success: true });
+    }
+    const medicationMatch = endpoint.match(/^\/medical\/medications\/(\d+)$/);
+    if (medicationMatch && method === 'PUT') {
+      const b = await readJsonObject(request);
+      const active = b.active !== false;
+      await env.DB.prepare(`UPDATE medications SET person = ?, name = ?, strength = ?, dose = ?, frequency = ?, scheduled_times = ?,
+        prescribing_source = ?, notes = ?, active = ?, start_date = ?, stopped_date = ?, stopped_reason = ?, updated_at = datetime("now") WHERE id = ?`)
+        .bind(
+          requireChoice(b.person, 'person', MEDICAL_PEOPLE), requireText(b, 'name', 300),
+          optionalTextValue(b.strength, 100, 'strength'), requireText(b, 'dose', 200), requireText(b, 'frequency', 200),
+          JSON.stringify(parseScheduledTimes(b.scheduled_times)), optionalTextValue(b.prescribing_source, 300, 'prescribing_source'),
+          optionalTextValue(b.notes, 4000, 'notes'), active ? 1 : 0, requireIsoDateValue(b.start_date, 'start_date'),
+          active ? null : requireIsoDateValue(b.stopped_date || new Date().toISOString().slice(0, 10), 'stopped_date'),
+          active ? null : optionalTextValue(b.stopped_reason, 1000, 'stopped_reason'), +medicationMatch[1],
+        ).run();
+      return json({ success: true });
+    }
+
+    if (endpoint === '/medical/doses' && method === 'GET') {
+      const params = new URL(request.url).searchParams;
+      const date = params.get('date');
+      const r = date
+        ? await env.DB.prepare('SELECT * FROM medication_doses WHERE date(scheduled_at) = ? ORDER BY scheduled_at DESC').bind(requireIsoDateValue(date, 'date')).all()
+        : await env.DB.prepare('SELECT * FROM medication_doses ORDER BY scheduled_at DESC LIMIT 200').all();
+      return json({ doses: r.results || [] });
+    }
+    if (endpoint === '/medical/doses' && method === 'POST') {
+      const b = await readJsonObject(request);
+      if (!Number.isInteger(b.medication_id) || b.medication_id < 1) throw Object.assign(new Error('medication_id must be a positive integer'), { status: 400 });
+      const medication = await env.DB.prepare('SELECT * FROM medications WHERE id = ?').bind(b.medication_id).first();
+      if (!medication) throw Object.assign(new Error('Medication not found'), { status: 404 });
+      const scheduledAt = requireDateTimeValue(b.scheduled_at || new Date().toISOString().slice(0, 16), 'scheduled_at');
+      const status = requireChoice(b.status || 'Taken', 'status', DOSE_STATUSES);
+      await env.DB.prepare(`INSERT OR REPLACE INTO medication_doses
+        (medication_id, person, medication_name, medication_strength, medication_dose, scheduled_at, actual_taken_at, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime("now"))`)
+        .bind(medication.id, medication.person, medication.name, medication.strength || null, medication.dose,
+          scheduledAt, status === 'Taken' ? new Date().toISOString() : null, status).run();
+      return json({ success: true });
+    }
+
+    if (endpoint === '/medical/prescriptions' && method === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM prescription_renewals ORDER BY next_order_date DESC, created_at DESC').all();
+      return json({ prescriptions: r.results || [] });
+    }
+    if (endpoint === '/medical/prescriptions' && method === 'POST') {
+      const b = await readJsonObject(request);
+      await env.DB.prepare(`INSERT INTO prescription_renewals
+        (medication_id, person, medication_name, last_ordered_date, next_order_date, quantity_remaining, status, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(optionalPositiveInteger(b.medication_id, 'medication_id'), requireChoice(b.person, 'person', MEDICAL_PEOPLE),
+          requireText(b, 'medication_name', 300), optionalIsoDateValue(b.last_ordered_date, 'last_ordered_date'),
+          optionalIsoDateValue(b.next_order_date, 'next_order_date'), optionalNonNegativeInteger(b.quantity_remaining, 'quantity_remaining'),
+          requireChoice(b.status || 'Enough', 'status', PRESCRIPTION_STATUSES), optionalTextValue(b.notes, 4000, 'notes')).run();
+      return json({ success: true });
+    }
+    const prescriptionMatch = endpoint.match(/^\/medical\/prescriptions\/(\d+)$/);
+    if (prescriptionMatch && method === 'PUT') {
+      const b = await readJsonObject(request);
+      await env.DB.prepare(`UPDATE prescription_renewals SET medication_id = ?, person = ?, medication_name = ?, last_ordered_date = ?,
+        next_order_date = ?, quantity_remaining = ?, status = ?, notes = ?, updated_at = datetime("now") WHERE id = ?`)
+        .bind(optionalPositiveInteger(b.medication_id, 'medication_id'), requireChoice(b.person, 'person', MEDICAL_PEOPLE),
+          requireText(b, 'medication_name', 300), optionalIsoDateValue(b.last_ordered_date, 'last_ordered_date'),
+          optionalIsoDateValue(b.next_order_date, 'next_order_date'), optionalNonNegativeInteger(b.quantity_remaining, 'quantity_remaining'),
+          requireChoice(b.status, 'status', PRESCRIPTION_STATUSES), optionalTextValue(b.notes, 4000, 'notes'), +prescriptionMatch[1]).run();
+      return json({ success: true });
+    }
+
+    /* Household */
+    if (endpoint === '/household' && method === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM household_chores ORDER BY done ASC, next_due_date ASC, created_at DESC').all();
+      return json({ chores: r.results || [] });
+    }
+    if (endpoint === '/household' && method === 'POST') {
+      const b = await readJsonObject(request);
+      const frequency = requireChoice(b.frequency || 'One-off', 'frequency', CHORE_FREQUENCIES);
+      const recurrenceDays = frequency === 'Custom' ? requirePositiveInteger(b.recurrence_days, 'recurrence_days', 3650) : null;
+      await env.DB.prepare('INSERT INTO household_chores (task, frequency, recurrence_days, next_due_date, notes) VALUES (?, ?, ?, ?, ?)')
+        .bind(requireText(b, 'task', 300), frequency, recurrenceDays, requireIsoDateValue(b.next_due_date, 'next_due_date'), optionalTextValue(b.notes, 4000, 'notes')).run();
+      return json({ success: true });
+    }
+    const choreCompleteMatch = endpoint.match(/^\/household\/(\d+)\/complete$/);
+    if (choreCompleteMatch && method === 'POST') {
+      const chore = await env.DB.prepare('SELECT * FROM household_chores WHERE id = ?').bind(+choreCompleteMatch[1]).first();
+      if (!chore) throw Object.assign(new Error('Chore not found'), { status: 404 });
+      const nextDue = nextChoreDueDate(chore.next_due_date, chore.frequency, chore.recurrence_days);
+      if (nextDue) {
+        await env.DB.prepare('UPDATE household_chores SET next_due_date = ?, done = 0, last_completed_at = datetime("now"), updated_at = datetime("now") WHERE id = ?')
+          .bind(nextDue, chore.id).run();
+      } else {
+        await env.DB.prepare('UPDATE household_chores SET done = 1, last_completed_at = datetime("now"), updated_at = datetime("now") WHERE id = ?')
+          .bind(chore.id).run();
+      }
+      return json({ success: true, next_due_date: nextDue });
+    }
+
+    /* Home Admin */
+    if (endpoint === '/home-admin' && method === 'GET') {
+      const r = await env.DB.prepare("SELECT * FROM home_admin ORDER BY status = 'Done', due_date ASC").all();
+      return json({ items: r.results || [] });
+    }
+    if (endpoint === '/home-admin' && method === 'POST') {
+      const b = await readJsonObject(request);
+      const recurrence = requireChoice(b.recurrence || 'None', 'recurrence', ADMIN_RECURRENCES);
+      await env.DB.prepare('INSERT INTO home_admin (title, category, due_date, recurrence, recurrence_days, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(requireText(b, 'title', 300), b.category ? requireText(b, 'category', 100) : 'General',
+          requireIsoDateValue(b.due_date, 'due_date'), recurrence,
+          recurrence === 'Custom' ? requirePositiveInteger(b.recurrence_days, 'recurrence_days', 3650) : null,
+          requireChoice(b.status || 'Upcoming', 'status', ADMIN_STATUSES), optionalTextValue(b.notes, 4000, 'notes')).run();
+      return json({ success: true });
+    }
+    const adminMatch = endpoint.match(/^\/home-admin\/(\d+)$/);
+    if (adminMatch && method === 'PUT') {
+      const b = await readJsonObject(request);
+      const recurrence = requireChoice(b.recurrence || 'None', 'recurrence', ADMIN_RECURRENCES);
+      const status = requireChoice(b.status, 'status', ADMIN_STATUSES);
+      await env.DB.prepare(`UPDATE home_admin SET title = ?, category = ?, due_date = ?, recurrence = ?, recurrence_days = ?, status = ?, notes = ?,
+        completed_at = CASE WHEN ? = 'Done' THEN COALESCE(completed_at, datetime("now")) ELSE NULL END, updated_at = datetime("now") WHERE id = ?`)
+        .bind(requireText(b, 'title', 300), b.category ? requireText(b, 'category', 100) : 'General',
+          requireIsoDateValue(b.due_date, 'due_date'), recurrence,
+          recurrence === 'Custom' ? requirePositiveInteger(b.recurrence_days, 'recurrence_days', 3650) : null,
+          status, optionalTextValue(b.notes, 4000, 'notes'), status, +adminMatch[1]).run();
+      return json({ success: true });
+    }
+
+    /* Food meal planner and lightweight favourites */
+    if (endpoint === '/meal-plan' && method === 'GET') {
+      const params = new URL(request.url).searchParams;
+      const from = optionalIsoDateValue(params.get('from'), 'from') || new Date().toISOString().slice(0, 10);
+      const to = optionalIsoDateValue(params.get('to'), 'to') || addUtcDays(from, 6);
+      const r = await env.DB.prepare('SELECT * FROM meal_plan WHERE plan_date >= ? AND plan_date <= ? ORDER BY plan_date').bind(from, to).all();
+      return json({ meals: r.results || [], from, to });
+    }
+    if (endpoint === '/meal-plan' && method === 'POST') {
+      const b = await readJsonObject(request);
+      await env.DB.prepare(`INSERT INTO meal_plan (plan_date, meal, notes, ingredients_needed, saved_meal_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, datetime("now"))
+        ON CONFLICT(plan_date) DO UPDATE SET meal = excluded.meal, notes = excluded.notes,
+        ingredients_needed = excluded.ingredients_needed, saved_meal_id = excluded.saved_meal_id, updated_at = datetime("now")`)
+        .bind(requireIsoDateValue(b.plan_date, 'plan_date'), requireText(b, 'meal', 300),
+          optionalTextValue(b.notes, 2000, 'notes'), optionalTextValue(b.ingredients_needed, 2000, 'ingredients_needed'),
+          optionalPositiveInteger(b.saved_meal_id, 'saved_meal_id')).run();
+      return json({ success: true });
+    }
+    const mealIngredientsMatch = endpoint.match(/^\/meal-plan\/(\d+)\/add-ingredients$/);
+    if (mealIngredientsMatch && method === 'POST') {
+      const plan = await env.DB.prepare('SELECT * FROM meal_plan WHERE id = ?').bind(+mealIngredientsMatch[1]).first();
+      if (!plan) throw Object.assign(new Error('Meal plan not found'), { status: 404 });
+      const ingredients = splitIngredients(plan.ingredients_needed);
+      for (const ingredient of ingredients) {
+        await env.DB.prepare('INSERT INTO shopping (item, category, checked, added_by, created_at) VALUES (?, ?, 0, ?, datetime("now"))')
+          .bind(ingredient, 'Meal plan', config.PARTNER_1).run();
+      }
+      return json({ success: true, added: ingredients.length });
+    }
+    if (endpoint === '/saved-meals' && method === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM saved_meals ORDER BY favourite DESC, name').all();
+      return json({ meals: r.results || [] });
+    }
+    if (endpoint === '/saved-meals' && method === 'POST') {
+      const b = await readJsonObject(request);
+      await env.DB.prepare('INSERT INTO saved_meals (name, notes, ingredients, favourite) VALUES (?, ?, ?, ?)')
+        .bind(requireText(b, 'name', 300), optionalTextValue(b.notes, 2000, 'notes'), optionalTextValue(b.ingredients, 2000, 'ingredients'), b.favourite === false ? 0 : 1).run();
       return json({ success: true });
     }
 
@@ -1675,6 +1934,125 @@ async function handlePressure(env) {
 }
 
 /* ========================= UTILITIES ========================= */
+
+const MEDICAL_PEOPLE = ['Crimson', 'Conrad'];
+const APPOINTMENT_STATUSES = ['Upcoming', 'Completed', 'Cancelled', 'Rescheduled'];
+const DOSE_STATUSES = ['Due', 'Taken', 'Skipped'];
+const PRESCRIPTION_STATUSES = ['Enough', 'Order soon', 'Ordered', 'Ready', 'Collected'];
+const CHORE_FREQUENCIES = ['One-off', 'Daily', 'Weekly', 'Monthly', 'Custom'];
+const ADMIN_RECURRENCES = ['None', 'Monthly', 'Yearly', 'Custom'];
+const ADMIN_STATUSES = ['Upcoming', 'Due soon', 'Done'];
+
+function inputError(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
+function requireChoice(value, name, choices) {
+  if (typeof value !== 'string' || !choices.includes(value)) throw inputError(`${name} must be one of: ${choices.join(', ')}`);
+  return value;
+}
+
+function optionalTextValue(value, maxLength, name) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw inputError(`${name} must be text`);
+  const trimmed = value.trim();
+  if (trimmed.length > maxLength) throw inputError(`${name} is too long`);
+  return trimmed || null;
+}
+
+function requireIsoDateValue(value, name) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw inputError(`${name} must use YYYY-MM-DD`);
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) throw inputError(`${name} is not a valid date`);
+  return value;
+}
+
+function optionalIsoDateValue(value, name) {
+  return value === undefined || value === null || value === '' ? null : requireIsoDateValue(value, name);
+}
+
+function requireDateTimeValue(value, name) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?Z?)?$/.test(value)) {
+    throw inputError(`${name} must use an ISO date and time`);
+  }
+  if (Number.isNaN(new Date(value).getTime())) throw inputError(`${name} is not a valid date and time`);
+  return value;
+}
+
+function integerValue(value, name, { optional = false, min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  if (optional && (value === undefined || value === null || value === '')) return null;
+  const number = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  if (!Number.isInteger(number) || number < min || number > max) throw inputError(`${name} must be an integer between ${min} and ${max}`);
+  return number;
+}
+
+function requirePositiveInteger(value, name, max = Number.MAX_SAFE_INTEGER) {
+  return integerValue(value, name, { min: 1, max });
+}
+
+function optionalPositiveInteger(value, name) {
+  return integerValue(value, name, { optional: true, min: 1 });
+}
+
+function optionalNonNegativeInteger(value, name) {
+  return integerValue(value, name, { optional: true, min: 0 });
+}
+
+export function parseScheduledTimes(value) {
+  let values = value;
+  if (typeof value === 'string') {
+    try { values = JSON.parse(value); }
+    catch { values = value.split(',').map(part => part.trim()).filter(Boolean); }
+  }
+  if (values === undefined || values === null || values === '') return [];
+  if (!Array.isArray(values) || values.length > 12) throw inputError('scheduled_times must be a list of up to 12 HH:MM times');
+  const unique = [...new Set(values.map(time => String(time).trim()))].sort();
+  if (unique.some(time => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time))) throw inputError('scheduled_times must contain HH:MM times');
+  return unique;
+}
+
+export function medicationProgressForToday(medications, doses) {
+  const people = Object.fromEntries(MEDICAL_PEOPLE.map(person => [person, { taken: 0, due: 0 }]));
+  for (const medication of medications) {
+    if (!people[medication.person]) continue;
+    people[medication.person].due += parseScheduledTimes(medication.scheduled_times).length;
+  }
+  for (const dose of doses) {
+    if (people[dose.person] && dose.status === 'Taken') people[dose.person].taken += 1;
+  }
+  return people;
+}
+
+export function addUtcDays(dateString, days) {
+  const date = new Date(`${requireIsoDateValue(dateString, 'date')}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function addUtcMonth(dateString) {
+  const date = new Date(`${requireIsoDateValue(dateString, 'date')}T00:00:00Z`);
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + 1);
+  const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, last));
+  return date.toISOString().slice(0, 10);
+}
+
+export function nextChoreDueDate(currentDue, frequency, recurrenceDays, today = new Date().toISOString().slice(0, 10)) {
+  requireChoice(frequency, 'frequency', CHORE_FREQUENCIES);
+  if (frequency === 'One-off') return null;
+  const base = currentDue > today ? requireIsoDateValue(currentDue, 'next_due_date') : requireIsoDateValue(today, 'today');
+  if (frequency === 'Daily') return addUtcDays(base, 1);
+  if (frequency === 'Weekly') return addUtcDays(base, 7);
+  if (frequency === 'Monthly') return addUtcMonth(base);
+  return addUtcDays(base, requirePositiveInteger(recurrenceDays, 'recurrence_days', 3650));
+}
+
+export function splitIngredients(value) {
+  if (!value) return [];
+  return [...new Set(String(value).split(/[\n,]/).map(item => item.trim()).filter(Boolean))].slice(0, 50);
+}
 
 function getCookie(request, name) {
   const cookies = request.headers.get('Cookie') || '';

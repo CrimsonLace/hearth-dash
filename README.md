@@ -12,6 +12,11 @@
 
 Hearth is a small personal dashboard for two people. It runs as a Cloudflare Worker with D1 storage and an optional R2 photo bucket. The same private data is available through a standards-compliant, OAuth-protected MCP Streamable HTTP endpoint so Claude and other compatible clients can discover and use Hearth's tools.
 
+> **CrimsonLace custom fork.** This repository preserves attribution to the original
+> [`martusha89/hearth-dash`](https://github.com/martusha89/hearth-dash) project while
+> carrying a private-life dashboard redesign. Do not use `npx hearth-dash@latest deploy`
+> for this fork: that command installs the upstream npm package, not this source tree.
+
 ## Features
 
 - Dashboard overview, moods, shared notes, moments, important dates and shopping list
@@ -23,10 +28,40 @@ Hearth is a small personal dashboard for two people. It runs as a Cloudflare Wor
 - OAuth 2.1 authorization with PKCE, protected-resource discovery, CIMD and Dynamic Client Registration
 - Separate `hearth:read` and `hearth:write` permissions
 - Deployment and connector-configuration CLI
+- Warm, responsive dashboard with Medical, Household, Home Admin and a seven-day meal planner
+- Separate medical organisation for Crimson and Conrad, independent of the configured Hearth partners
+- Ordered, ledger-backed D1 migrations for safe upgrades
 
 The MCP server exposes `hearth_status`, `hearth_mood`, `hearth_note`, `hearth_moment`, `hearth_date`, `hearth_shopping_list`, `hearth_shopping_add`, `hearth_pressure`, `hearth_food_diary_today`, `hearth_food_diary_history`, `hearth_food_review`, and `hearth_water_status`.
 
 ## Deploy
+
+### Custom-fork deployment safety
+
+No deployment is performed by the repository or its tests. After reviewing and merging a
+change, deploy **from a clean checkout of this fork**:
+
+```bash
+git clone https://github.com/CrimsonLace/hearth-dash.git
+cd hearth-dash
+git checkout master
+npm ci
+
+# Put the existing production D1, KV and R2 IDs in this checkout's wrangler.toml.
+# Keep those account-specific IDs out of commits.
+node cli/index.js migrate
+npx wrangler deploy --dry-run
+npx wrangler deploy
+```
+
+The `migrate` command creates the migration ledger if needed, reads the numbered SQL files
+under `migrations/`, applies only versions that have not previously succeeded, and records
+each completed version. Always migrate before activating Worker code that depends on a new
+schema. Back up the production D1 database before a production migration.
+
+The local `node cli/index.js deploy` command also applies pending migrations before Worker
+activation, but it is the full provisioning wizard and may prompt for secrets. Never substitute
+`npx hearth-dash@latest deploy`; that is Marta's published upstream build.
 
 ### Bundled CLI
 

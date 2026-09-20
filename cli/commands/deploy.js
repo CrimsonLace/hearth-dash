@@ -1,11 +1,11 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, cpSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { getPackageRoot, getNodeMajor } from "../lib/platform.js";
 import { ask, confirm, password } from "../lib/prompts.js";
 import {
   execWrangler, execCommand, parseD1CreateOutput, parseDeployOutput, parseKvCreateOutput,
-  checkWranglerAuth, wranglerLogin, setSecret, executeSchema, verifySecuritySchema, provisionAfterVerifiedSchema,
+  checkWranglerAuth, wranglerLogin, setSecret, executeSchema, runMigrations, verifySecuritySchema, provisionAfterVerifiedSchema,
   listD1Databases, listKvNamespaces,
 } from "../lib/wrangler.js";
 import { banner, step, bold, dim, cyan, green, yellow, red, success, fail, warn, info, spinner } from "../lib/ui.js";
@@ -119,11 +119,14 @@ export default async function deployCommand(args) {
 
   // Copy worker files to deploy dir
   const s1 = spinner("Copying source files");
-  for (const file of ["worker.js", "oauth-entry.js", "schema.sql", "wrangler.toml", "package.json"]) {
+  for (const file of ["worker.js", "dashboard.js", "oauth-entry.js", "schema.sql", "wrangler.toml", "package.json"]) {
     const src = join(pkgRoot, file);
     if (!existsSync(src)) { s1.fail(`Missing: ${file}`); process.exit(1); }
     writeFileSync(join(deployDir, file), readFileSync(src, "utf-8"), "utf-8");
   }
+  const migrationsSource = join(pkgRoot, 'migrations');
+  if (!existsSync(migrationsSource)) { s1.fail('Missing: migrations'); process.exit(1); }
+  cpSync(migrationsSource, join(deployDir, 'migrations'), { recursive: true });
   s1.stop("Source files copied");
 
   const install = await execCommand('npm', ['install', '--omit=dev', '--ignore-scripts'], deployDir);
@@ -174,7 +177,11 @@ export default async function deployCommand(args) {
   const s6 = spinner("Initializing database schema");
   let provision;
   const prepared = await provisionAfterVerifiedSchema({
-    applySchema: () => executeSchema("hearth-dash-db", join(deployDir, "schema.sql"), deployDir),
+    applySchema: async () => {
+      const schema = await executeSchema("hearth-dash-db", join(deployDir, "schema.sql"), deployDir);
+      if (!schema.ok) return schema;
+      return runMigrations("hearth-dash-db", join(deployDir, 'migrations'), deployDir);
+    },
     verifySchema: () => verifySecuritySchema('hearth-dash-db', deployDir),
     onSchemaVerified: () => {
       s6.stop("Database schema initialized and verified");

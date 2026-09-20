@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { basename, join } from "node:path";
 
 function spawnCmd(cmd, args, opts) {
   if (process.platform === "win32") {
@@ -77,6 +78,64 @@ export async function executeSchema(dbName, schemaPath, cwd) {
     if (r.code !== 0) return { ok: false, error: r.stderr || r.stdout };
   }
   return { ok: true };
+}
+
+export function parseAppliedMigrations(output) {
+  try {
+    const parsed = JSON.parse(output);
+    const envelopes = Array.isArray(parsed) ? parsed : [parsed];
+    return new Set(envelopes.flatMap(item => item?.results || []).map(row => String(row.version)));
+  } catch {
+    return new Set();
+  }
+}
+
+export function pendingMigrationFiles(files, applied) {
+  return files
+    .filter(file => /^\d{3}_[a-z0-9_-]+\.sql$/i.test(file))
+    .sort()
+    .filter(file => !applied.has(basename(file, '.sql')));
+}
+
+export async function applyPendingMigrations({ files, applied, applyFile, record }) {
+  const pending = pendingMigrationFiles(files, applied);
+  for (const file of pending) {
+    const version = basename(file, '.sql');
+    const result = await applyFile(file);
+    if (!result.ok) return { ok: false, version, error: result.error || 'migration failed', applied: [] };
+    const recorded = await record(version);
+    if (!recorded.ok) return { ok: false, version, error: recorded.error || 'could not record migration', applied: [] };
+  }
+  return { ok: true, applied: pending.map(file => basename(file, '.sql')) };
+}
+
+export async function runMigrations(dbName, migrationsDir, cwd) {
+  const ledger = await execWrangler([
+    'd1', 'execute', dbName, '--remote', '--command',
+    "CREATE TABLE IF NOT EXISTS hearth_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));",
+  ], cwd);
+  if (ledger.code !== 0) return { ok: false, error: ledger.stderr || ledger.stdout };
+
+  const listed = await execWrangler([
+    'd1', 'execute', dbName, '--remote', '--command',
+    'SELECT version FROM hearth_migrations ORDER BY version;', '--json',
+  ], cwd);
+  if (listed.code !== 0) return { ok: false, error: listed.stderr || listed.stdout };
+
+  const files = readdirSync(migrationsDir);
+  return applyPendingMigrations({
+    files,
+    applied: parseAppliedMigrations(listed.stdout),
+    applyFile: file => executeSchema(dbName, join(migrationsDir, file), cwd),
+    async record(version) {
+      const escaped = version.replaceAll("'", "''");
+      const result = await execWrangler([
+        'd1', 'execute', dbName, '--remote', '--command',
+        `INSERT INTO hearth_migrations (version) VALUES ('${escaped}');`,
+      ], cwd);
+      return result.code === 0 ? { ok: true } : { ok: false, error: result.stderr || result.stdout };
+    },
+  });
 }
 
 export function hasRequiredSchemaTables(output, requiredTables) {
