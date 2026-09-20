@@ -1,4 +1,5 @@
 import { getRedesignedDashboardHTML } from './dashboard.js';
+import { configuredPartners } from './partners.js';
 
 /**
  * Hearth Dash — Personal Dashboard
@@ -20,6 +21,7 @@ function getConfig(env) {
       .split(',').map(value => value.trim()).filter(Boolean),
     PARTNER_1: env.PARTNER_1 || 'Partner 1',
     PARTNER_2: env.PARTNER_2 || 'Partner 2',
+    PARTNER_3: env.PARTNER_3,
   };
 }
 
@@ -960,13 +962,13 @@ export async function handleAPI(request, env, endpoint, config) {
   try {
     /* Dashboard */
     if (endpoint === '/dashboard' && method === 'GET') {
+      const partners = configuredPartners(config);
       const [
-        moodsP1, moodsP2, latestNote, nextDate, shoppingCount, todayMeals, todayWater,
+        partnerMoods, latestNote, nextDate, shoppingCount, todayMeals, todayWater,
         nextMedical, medications, todayDoses, renewals, chores, adminItems,
         shoppingPreview, latestMoment, tonightMeal,
       ] = await Promise.all([
-        env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(config.PARTNER_1).first(),
-        env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(config.PARTNER_2).first(),
+        Promise.all(partners.map(partner => env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(partner).first())),
         env.DB.prepare('SELECT * FROM notes ORDER BY created_at DESC LIMIT 1').first(),
         env.DB.prepare('SELECT * FROM dates WHERE date >= date("now") ORDER BY date ASC LIMIT 1').first(),
         env.DB.prepare('SELECT COUNT(*) as cnt FROM shopping WHERE checked = 0').first(),
@@ -982,9 +984,7 @@ export async function handleAPI(request, env, endpoint, config) {
         env.DB.prepare('SELECT * FROM moments ORDER BY created_at DESC LIMIT 1').first(),
         env.DB.prepare("SELECT * FROM meal_plan WHERE plan_date = date('now') LIMIT 1").first(),
       ]);
-      const moods = {};
-      moods[config.PARTNER_1] = moodsP1;
-      moods[config.PARTNER_2] = moodsP2;
+      const moods = Object.fromEntries(partners.map((partner, index) => [partner, partnerMoods[index]]));
       const medicationProgress = medicationProgressForToday(medications.results || [], todayDoses.results || []);
       const dueChores = chores.results || [];
       const today = new Date().toISOString().slice(0, 10);
@@ -1009,7 +1009,7 @@ export async function handleAPI(request, env, endpoint, config) {
     if (endpoint === '/moods' && method === 'GET') { const r = await env.DB.prepare('SELECT * FROM moods ORDER BY created_at DESC LIMIT 20').all(); return json({ moods: r.results }); }
     if (endpoint === '/moods' && method === 'POST') {
       const b = await readJsonObject(request);
-      const partner = requireText(b, 'partner', 80, [config.PARTNER_1, config.PARTNER_2]);
+      const partner = requireText(b, 'partner', 80, configuredPartners(config));
       const mood = requireText(b, 'mood', 20, ['great', 'good', 'okay', 'tired', 'stressed', 'low']);
       await env.DB.prepare('INSERT INTO moods (partner, mood, note, created_at) VALUES (?, ?, ?, datetime("now"))').bind(partner, mood, optionalText(b, 'note', 2000)).run();
       return json({ success: true });
@@ -1621,7 +1621,7 @@ async function handleMCP(request, env, config, remainder, scopes = []) {
     return rpcResult(message.id, {
       protocolVersion,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'hearth-dash', version: '1.1.0' },
+      serverInfo: { name: 'hearth-dash', version: '1.1.4-crimson.2' },
       instructions: 'Hearth is a private shared dashboard. Read tools do not change data; write tools change the shared household record.',
     });
   }
@@ -1661,21 +1661,22 @@ async function handleMCP(request, env, config, remainder, scopes = []) {
 }
 
 async function mcpStatus(env, config) {
-  const [moodsP1, moodsP2, latestNote, nextDate] = await Promise.all([
-    env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(config.PARTNER_1).first(),
-    env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(config.PARTNER_2).first(),
+  const partners = configuredPartners(config);
+  const [partnerMoods, latestNote, nextDate] = await Promise.all([
+    Promise.all(partners.map(partner => env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(partner).first())),
     env.DB.prepare('SELECT * FROM notes ORDER BY created_at DESC LIMIT 1').first(),
     env.DB.prepare('SELECT * FROM dates WHERE date >= date("now") ORDER BY date ASC LIMIT 1').first()
   ]);
-  const moods = {};
-  moods[config.PARTNER_1] = moodsP1;
-  moods[config.PARTNER_2] = moodsP2;
+  const moods = Object.fromEntries(partners.map((partner, index) => [partner, partnerMoods[index]]));
   return json({ moods, latestNote, nextDate });
 }
 
 async function mcpMood(env, params, config) {
-  if (params.action === 'get') { const r = await env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 5').bind(params.partner || config.PARTNER_1).all(); return json({ moods: r.results }); }
-  if (params.action === 'set') { await env.DB.prepare('INSERT INTO moods (partner, mood, note, created_at) VALUES (?, ?, ?, datetime("now"))').bind(params.partner, params.mood, params.note || null).run(); return json({ success: true, message: `Logged ${params.mood} mood for ${params.partner}` }); }
+  const partners = configuredPartners(config);
+  const partner = params.partner || partners[0];
+  if (!partner || !partners.includes(partner)) return json({ error: 'partner must be a configured Hearth partner' }, 400);
+  if (params.action === 'get') { const r = await env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 5').bind(partner).all(); return json({ moods: r.results }); }
+  if (params.action === 'set') { await env.DB.prepare('INSERT INTO moods (partner, mood, note, created_at) VALUES (?, ?, ?, datetime("now"))').bind(partner, params.mood, params.note || null).run(); return json({ success: true, message: `Logged ${params.mood} mood for ${partner}` }); }
   return json({ error: 'Invalid action. Use: get, set' });
 }
 

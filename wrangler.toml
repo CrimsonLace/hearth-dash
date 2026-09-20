@@ -6,6 +6,7 @@ compatibility_flags = ["global_fetch_strictly_public"]
 [vars]
 PARTNER_1 = "Partner 1"
 PARTNER_2 = "Partner 2"
+PARTNER_3 = "Elijah"
 # WEATHER_LAT = "52.5726"
 # WEATHER_LON = "-0.2405"
 

@@ -10,7 +10,7 @@
 
 </div>
 
-Hearth is a small personal dashboard for two people. It runs as a Cloudflare Worker with D1 storage and an optional R2 photo bucket. The same private data is available through a standards-compliant, OAuth-protected MCP Streamable HTTP endpoint so Claude and other compatible clients can discover and use Hearth's tools.
+Hearth is a small shared-life dashboard for configurable partners. It runs as a Cloudflare Worker with D1 storage and an optional R2 photo bucket. The same private data is available through a standards-compliant, OAuth-protected MCP Streamable HTTP endpoint so Claude and other compatible clients can discover and use Hearth's tools.
 
 > **CrimsonLace custom fork.** This repository preserves attribution to the original
 > [`martusha89/hearth-dash`](https://github.com/martusha89/hearth-dash) project while
@@ -18,14 +18,14 @@ Hearth is a small personal dashboard for two people. It runs as a Cloudflare Wor
 > installation. **Do not use `npx hearth-dash@latest deploy`**: customized deployments must
 > run from a checked-out copy of `CrimsonLace/hearth-dash`.
 
-This fork identifies itself as **1.1.4-crimson.1** without publishing an npm package.
+This fork identifies itself as **1.1.4-crimson.2** without publishing an npm package.
 
 ## Features
 
 - Dashboard overview, moods, shared notes, moments, important dates and shopping list
 - Food and water diary with private R2 photos and daily reviews
 - Weather, barometric pressure history and pressure-shift alerts
-- Configurable partner names
+- Two required partner names and an optional third partner name
 - Password-protected web dashboard with signed, expiring sessions
 - Streamable HTTP MCP with JSON-RPC `initialize`, `ping`, `tools/list` and `tools/call`
 - OAuth 2.1 authorization with PKCE, protected-resource discovery, CIMD and Dynamic Client Registration
@@ -104,7 +104,7 @@ npx wrangler secret put WEATHER_API_KEY  # optional
 npm run deploy
 ```
 
-Configuration lives in `wrangler.toml`: partner names under `[vars]`, the D1 binding, OAuth KV binding, R2 bucket binding and optional `WEATHER_LAT` / `WEATHER_LON`. Keep the `global_fetch_strictly_public` compatibility flag: it lets the OAuth provider resolve Claude's Client ID Metadata Document with Cloudflare's SSRF protections. OpenWeatherMap is required only for weather and pressure features.
+Configuration lives in `wrangler.toml`: partner names under `[vars]` (`PARTNER_1`, `PARTNER_2`, and optional `PARTNER_3`), the D1 binding, OAuth KV binding, R2 bucket binding and optional `WEATHER_LAT` / `WEATHER_LON`. Partner names must be non-empty, distinct, and no more than 80 characters; omit `PARTNER_3` to keep the original two-person behaviour. Keep the `global_fetch_strictly_public` compatibility flag: it lets the OAuth provider resolve Claude's Client ID Metadata Document with Cloudflare's SSRF protections. OpenWeatherMap is required only for weather and pressure features.
 
 ## Connect Claude
 

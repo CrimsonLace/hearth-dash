@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { getRedesignedDashboardHTML } from '../dashboard.js';
+import { configuredPartners, formatPartnerList, validatePartnerNames } from '../partners.js';
 import {
   addUtcDays, handleAPI, medicationProgressForToday, nextChoreDueDate, parseScheduledTimes, splitIngredients,
 } from '../worker.js';
@@ -103,7 +104,7 @@ function request(body, method = 'POST', path = '/api/test') {
 }
 
 test('renders the warm responsive dashboard without visible weather or pressure navigation', () => {
-  const html = getRedesignedDashboardHTML({ PARTNER_1: '</script><b>Crimson</b>', PARTNER_2: "O'Malley" });
+  const html = getRedesignedDashboardHTML({ PARTNER_1: '</script><b>Crimson</b>', PARTNER_2: "O'Malley", PARTNER_3: '<svg onload=alert(1)>' });
   assert.match(html, /#F7F2EA/);
   assert.match(html, /Medical/);
   assert.match(html, /Household/);
@@ -113,7 +114,29 @@ test('renders the warm responsive dashboard without visible weather or pressure 
   assert.doesNotMatch(html, /data-page="pressure"/);
   assert.doesNotMatch(html, /<\/script><b>Crimson/);
   assert.match(html, /O&#39;Malley/);
-  assert.match(html, /1\.1\.4-crimson\.1/);
+  assert.doesNotMatch(html, /<svg onload=alert\(1\)>/);
+  assert.match(html, /&lt;svg onload=alert\(1\)&gt;/);
+  assert.match(html, /1\.1\.4-crimson\.2/);
+});
+
+test('normalizes optional partner configuration and preserves two-person fallback', () => {
+  assert.deepEqual(configuredPartners({ PARTNER_1: ' Crimson ', PARTNER_2: 'Jace' }), ['Crimson', 'Jace']);
+  assert.deepEqual(configuredPartners({ PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: '  ' }), ['Crimson', 'Jace']);
+  assert.deepEqual(configuredPartners({ PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: 'Jace' }), ['Crimson', 'Jace']);
+  assert.throws(() => configuredPartners({ PARTNER_1: 'x'.repeat(81), PARTNER_2: 'Jace' }), /80 characters/);
+  assert.deepEqual(validatePartnerNames([' Crimson ', 'Jace', ' Elijah ']), ['Crimson', 'Jace', 'Elijah']);
+  assert.deepEqual(validatePartnerNames(['Crimson', 'Jace', '']), ['Crimson', 'Jace']);
+  assert.throws(() => validatePartnerNames(['Crimson', 'Crimson', '']), /distinct/);
+  assert.throws(() => validatePartnerNames(['Crimson', 'Jace', 'x'.repeat(81)]), /80 characters/);
+  assert.equal(formatPartnerList(['Crimson', 'Jace', 'Elijah']), 'Crimson, Jace and Elijah');
+});
+
+test('renders all configured partners in relevant controls and the Hearth subtitle', () => {
+  const html = getRedesignedDashboardHTML({ PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: 'Elijah' });
+  assert.match(html, /A shared Hearth for Crimson, Jace and Elijah/);
+  assert.equal((html.match(/<option value="Elijah">Elijah<\/option>/g) || []).length, 3);
+  assert.match(html, /\.topbar\{[^}]*flex-wrap:wrap/);
+  assert.match(html, /const PARTNERS=\["Crimson","Jace","Elijah"\]/);
 });
 
 test('fork documentation never presents the upstream package as an executable command', () => {
@@ -124,7 +147,7 @@ test('fork documentation never presents the upstream package as an executable co
   assert.deepEqual(operationalLines, []);
   assert.match(readme, /Do not use[^\n]*hearth-dash@latest deploy/);
   assert.match(readme, /CrimsonLace\/hearth-dash/);
-  assert.equal(packageJson.version, '1.1.4-crimson.1');
+  assert.equal(packageJson.version, '1.1.4-crimson.2');
   assert.equal(packageJson.private, true);
 });
 
@@ -284,6 +307,30 @@ test('dashboard aggregation is safe when every new section is empty', async () =
   assert.deepEqual(body.medicationProgress, { Crimson: { taken: 0, due: 0 }, Conrad: { taken: 0, due: 0 } });
   assert.deepEqual(body.household, { dueToday: 0, overdue: 0, items: [] });
   assert.equal(body.tonightMeal, null);
+});
+
+test('dashboard aggregation and REST mood validation use all configured partners', async () => {
+  const threePartnerConfig = { PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: 'Elijah' };
+  const db = new RecordingD1();
+  const response = await handleAPI(new Request('https://hearth.example/api/dashboard'), { DB: db }, '/dashboard', threePartnerConfig);
+  assert.deepEqual((await response.json()).moods, { Crimson: null, Jace: null, Elijah: null });
+  const moodQueries = db.statements.filter(statement => statement.kind === 'first' && statement.sql.startsWith('SELECT * FROM moods'));
+  assert.deepEqual(moodQueries.map(statement => statement.args[0]), ['Crimson', 'Jace', 'Elijah']);
+
+  const accepted = await handleAPI(request({ partner: 'Elijah', mood: 'good', note: '' }), { DB: db }, '/moods', threePartnerConfig);
+  assert.equal(accepted.status, 200);
+  const rejected = await handleAPI(request({ partner: 'Conrad', mood: 'good', note: '' }), { DB: db }, '/moods', threePartnerConfig);
+  assert.equal(rejected.status, 400);
+});
+
+test('notes retain free-text API compatibility and shopping accepts Elijah attribution', async () => {
+  const db = new RecordingD1();
+  const note = await handleAPI(request({ from: 'Guest carer', content: 'Left a note' }), { DB: db }, '/notes', config);
+  assert.equal(note.status, 200);
+  const shopping = await handleAPI(request({ item: 'Tea', category: 'Food', added_by: 'Elijah' }), { DB: db }, '/shopping', config);
+  assert.equal(shopping.status, 200);
+  assert.deepEqual(db.statements.find(statement => statement.sql.startsWith('INSERT INTO notes')).args.slice(0, 2), ['Guest carer', 'Left a note']);
+  assert.deepEqual(db.statements.find(statement => statement.sql.startsWith('INSERT INTO shopping')).args, ['Tea', 'Food', 'Elijah']);
 });
 
 test('fresh schema and upgrade migration preserve existing pressure storage', () => {
