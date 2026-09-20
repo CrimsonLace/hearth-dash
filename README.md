@@ -12,6 +12,14 @@
 
 Hearth is a small personal dashboard for two people. It runs as a Cloudflare Worker with D1 storage and an optional R2 photo bucket. The same private data is available through a standards-compliant, OAuth-protected MCP Streamable HTTP endpoint so Claude and other compatible clients can discover and use Hearth's tools.
 
+> **CrimsonLace custom fork.** This repository preserves attribution to the original
+> [`martusha89/hearth-dash`](https://github.com/martusha89/hearth-dash) project while
+> carrying a private-life dashboard redesign. The upstream repository is read-only for this
+> installation. **Do not use `npx hearth-dash@latest deploy`**: customized deployments must
+> run from a checked-out copy of `CrimsonLace/hearth-dash`.
+
+This fork identifies itself as **1.1.4-crimson.1** without publishing an npm package.
+
 ## Features
 
 - Dashboard overview, moods, shared notes, moments, important dates and shopping list
@@ -23,16 +31,46 @@ Hearth is a small personal dashboard for two people. It runs as a Cloudflare Wor
 - OAuth 2.1 authorization with PKCE, protected-resource discovery, CIMD and Dynamic Client Registration
 - Separate `hearth:read` and `hearth:write` permissions
 - Deployment and connector-configuration CLI
+- Warm, responsive dashboard with Medical, Household, Home Admin and a seven-day meal planner
+- Separate medical organisation for Crimson and Conrad, independent of the configured Hearth partners
+- Ordered, ledger-backed D1 migrations for safe upgrades
 
 The MCP server exposes `hearth_status`, `hearth_mood`, `hearth_note`, `hearth_moment`, `hearth_date`, `hearth_shopping_list`, `hearth_shopping_add`, `hearth_pressure`, `hearth_food_diary_today`, `hearth_food_diary_history`, `hearth_food_review`, and `hearth_water_status`.
 
 ## Deploy
 
+### Custom-fork deployment safety
+
+No deployment is performed by the repository or its tests. After reviewing and merging a
+change, deploy **from a clean checkout of this fork**:
+
+```bash
+git clone https://github.com/CrimsonLace/hearth-dash.git
+cd hearth-dash
+git checkout master
+npm ci
+
+# Put the existing production D1, KV and R2 IDs in this checkout's wrangler.toml.
+# Keep those account-specific IDs out of commits.
+node cli/index.js migrate
+npx wrangler deploy --dry-run
+npx wrangler deploy
+```
+
+The `migrate` command creates the migration ledger if needed, reads the numbered SQL files
+under `migrations/`, applies only versions that have not previously succeeded, and records
+each completed version. Always migrate before activating Worker code that depends on a new
+schema. Back up the production D1 database before a production migration.
+
+The local `node cli/index.js deploy` command also applies pending migrations before Worker
+activation, but it is the full provisioning wizard and may prompt for secrets. Never substitute
+a globally resolved or published-package CLI; always execute commands from this checkout.
+
 ### Bundled CLI
 
 ```bash
-npx hearth-dash deploy
-npx hearth-dash mcp
+node cli/index.js deploy
+node cli/index.js mcp
 ```
 
 The deploy command creates the D1 database, R2 bucket and OAuth KV namespace; installs the pinned runtime dependency; prompts for configuration; generates a session-signing secret; applies the schema; and deploys the Worker. It does not save the dashboard password locally.
@@ -70,7 +108,7 @@ Configuration lives in `wrangler.toml`: partner names under `[vars]`, the D1 bin
 
 ## Connect Claude
 
-After deployment, run `npx hearth-dash mcp`. The connector URL is:
+After deployment, run `node cli/index.js mcp` from this checkout. The connector URL is:
 
 ```text
 https://your-worker.example/mcp
@@ -116,7 +154,7 @@ The first-visit password setup page has also been removed. A public, unclaimed s
 
 ### 1.1.1 dashboard-login fix
 
-Version 1.1.1 keeps ordinary dashboard, login and API requests outside the OAuth provider and makes same-origin form validation resilient when a trusted Cloudflare wrapper reconstructs the internal request URL. Cross-site browser submissions remain rejected. Upgrade with `npx hearth-dash@latest deploy` if a 1.1.0 deployment returns plain `Forbidden` after submitting `/login`.
+Version 1.1.1 keeps ordinary dashboard, login and API requests outside the OAuth provider and makes same-origin form validation resilient when a trusted Cloudflare wrapper reconstructs the internal request URL. Cross-site browser submissions remain rejected. Fork deployments must apply upgrades from this checked-out source tree.
 
 ### 1.1.2 Chrome null-Origin fix
 

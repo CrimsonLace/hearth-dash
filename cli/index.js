@@ -6,6 +6,7 @@ const [,, command, ...args] = process.argv;
 
 const COMMANDS = {
   deploy: () => import("./commands/deploy.js"),
+  migrate: () => import("./commands/migrate.js"),
   mcp:    () => import("./commands/mcp.js"),
   config: () => import("./commands/config.js"),
 };
@@ -46,17 +47,19 @@ ${bold("Usage:")} hearth-dash <command> [options]
 
 ${bold("Commands:")}
   ${cyan("deploy")}    Deploy to Cloudflare (Workers + D1 + R2)
+  ${cyan("migrate")}   Apply pending D1 migrations from this checkout
   ${cyan("mcp")}       Print MCP config for Claude Code/Desktop
   ${cyan("config")}    View current configuration
 
-${bold("Quick start:")}
-  ${dim("$")} npx hearth-dash deploy
-  ${dim("$")} npx hearth-dash mcp
+${bold("Custom fork (run from this checkout):")}
+  ${dim("$")} node cli/index.js migrate
+  ${dim("$")} node cli/index.js deploy
+  ${dim("$")} node cli/index.js mcp
 
 ${bold("Requirements:")}
   - Node.js 22+
   - Cloudflare account (free tier works)
-  - OpenWeatherMap API key (free at ${dim("https://openweathermap.org/api")})
+  - OpenWeatherMap API key only if retaining the optional weather API
 `);
 }
 
