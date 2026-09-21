@@ -5,7 +5,7 @@ import { getPackageRoot, getNodeMajor } from "../lib/platform.js";
 import { ask, confirm, password } from "../lib/prompts.js";
 import {
   execWrangler, execCommand, parseD1CreateOutput, parseDeployOutput, parseKvCreateOutput,
-  checkWranglerAuth, wranglerLogin, setSecret, executeSchema, runMigrations, verifySecuritySchema, provisionAfterVerifiedSchema,
+  baselineFreshMigrations, checkWranglerAuth, wranglerLogin, setSecret, executeSchema, runMigrations, verifySecuritySchema, provisionAfterVerifiedSchema,
   listD1Databases, listKvNamespaces,
 } from "../lib/wrangler.js";
 import { banner, step, bold, dim, cyan, green, yellow, red, success, fail, warn, info, spinner } from "../lib/ui.js";
@@ -30,13 +30,16 @@ function saveConfig(data) {
 
 async function createD1OrReuse(dbName, cwd) {
   const result = await execWrangler(["d1", "create", dbName], cwd);
-  if (result.code === 0) return parseD1CreateOutput(result);
+  if (result.code === 0) {
+    const id = parseD1CreateOutput(result);
+    return id ? { id, created: true } : null;
+  }
   const combined = result.stdout + result.stderr;
   if (combined.includes("already exists") || combined.includes("already a database")) {
     warn(`Database "${dbName}" already exists. Looking up ID...`);
     const databases = await listD1Databases(cwd);
     const db = databases.find((d) => d.name === dbName);
-    if (db) { info(`Found: ${db.uuid}`); return db.uuid; }
+    if (db) { info(`Found: ${db.uuid}`); return { id: db.uuid, created: false }; }
     fail("Could not find existing database ID.");
     return null;
   }
@@ -140,8 +143,9 @@ export default async function deployCommand(args) {
   if (install.code !== 0) { fail(`Dependency install failed: ${install.stderr || install.stdout}`); process.exit(1); }
 
   const s2 = spinner("Creating D1 database");
-  const dbId = await createD1OrReuse("hearth-dash-db", deployDir);
-  if (!dbId) { s2.fail("D1 creation failed"); process.exit(1); }
+  const database = await createD1OrReuse("hearth-dash-db", deployDir);
+  if (!database) { s2.fail("D1 creation failed"); process.exit(1); }
+  const dbId = database.id;
   s2.stop(`D1 database ready: ${dbId.substring(0, 8)}...`);
 
   const oauthKvId = await createKvOrReuse('hearth-dash-oauth', deployDir);
@@ -190,6 +194,7 @@ export default async function deployCommand(args) {
     applySchema: async () => {
       const schema = await executeSchema("hearth-dash-db", join(deployDir, "schema.sql"), deployDir);
       if (!schema.ok) return schema;
+      if (database.created) return baselineFreshMigrations("hearth-dash-db", join(deployDir, 'migrations'), deployDir);
       return runMigrations("hearth-dash-db", join(deployDir, 'migrations'), deployDir);
     },
     verifySchema: () => verifySecuritySchema('hearth-dash-db', deployDir),

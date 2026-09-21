@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyPendingMigrations, hasRequiredOAuthCsrfColumns, hasRequiredSchemaTables, parseAppliedMigrations,
+  applyPendingMigrations, freshMigrationBaselineSql, hasRequiredOAuthCsrfColumns, hasRequiredSchemaTables, parseAppliedMigrations,
   parseD1CreateOutput, parseDeployOutput, parseKvCreateOutput, pendingMigrationFiles, provisionAfterVerifiedSchema,
 } from '../cli/lib/wrangler.js';
 
@@ -76,6 +76,14 @@ test('selects numbered migrations once and in order', async () => {
   assert.deepEqual(calls, ['apply:002_second.sql', 'record:002_second']);
 });
 
+test('builds one ordered fresh-install baseline statement', () => {
+  assert.equal(
+    freshMigrationBaselineSql(['002_second.sql', 'notes.txt', '001_first.sql']),
+    "INSERT INTO hearth_migrations (version) VALUES ('001_first'), ('002_second') ON CONFLICT(version) DO NOTHING;",
+  );
+  assert.equal(freshMigrationBaselineSql(['notes.txt']), null);
+});
+
 test('fails closed when the remote migration ledger is malformed or unexpected', () => {
   assert.throws(() => parseAppliedMigrations('not-json'), /Could not parse the remote migration ledger response/);
   assert.throws(() => parseAppliedMigrations(JSON.stringify({ success: true })), /unexpected shape/);
@@ -94,4 +102,18 @@ test('stops migration processing before recording a failed migration', async () 
   assert.equal(result.ok, false);
   assert.equal(result.version, '001_first');
   assert.deepEqual(calls, ['001_first.sql']);
+});
+
+test('fails closed before applying or recording an ambiguous migration state', async () => {
+  const calls = [];
+  const result = await applyPendingMigrations({
+    files: ['002_second.sql'],
+    applied: new Set(),
+    async reconcile() { return { ok: false, error: 'schema mismatch' }; },
+    async applyFile() { calls.push('apply'); return { ok: true }; },
+    async record() { calls.push('record'); return { ok: true }; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'schema mismatch');
+  assert.deepEqual(calls, []);
 });
