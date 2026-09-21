@@ -126,7 +126,7 @@ export default async function deployCommand(args) {
 
   // Copy worker files to deploy dir
   const s1 = spinner("Copying source files");
-  for (const file of ["worker.js", "dashboard.js", "partners.js", "oauth-entry.js", "schema.sql", "wrangler.toml", "package.json"]) {
+  for (const file of ["worker.js", "dashboard.js", "date-utils.js", "moods.js", "partners.js", "oauth-entry.js", "schema.sql", "wrangler.toml", "package.json"]) {
     const src = join(pkgRoot, file);
     if (!existsSync(src)) { s1.fail(`Missing: ${file}`); process.exit(1); }
     writeFileSync(join(deployDir, file), readFileSync(src, "utf-8"), "utf-8");

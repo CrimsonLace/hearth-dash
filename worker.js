@@ -1,4 +1,8 @@
 import { getRedesignedDashboardHTML } from './dashboard.js';
+import {
+  addCalendarDays, addCalendarMonths, formatLocalLongDate, localDateKey, localDateTimeKey, localTimeKey,
+} from './date-utils.js';
+import { MOOD_OPTIONS } from './moods.js';
 import { configuredPartners } from './partners.js';
 
 /**
@@ -959,40 +963,44 @@ export default applicationHandler;
 
 export async function handleAPI(request, env, endpoint, config) {
   const method = request.method;
+  const requestNow = new Date();
+  const today = localDateKey(requestNow);
   try {
     /* Dashboard */
     if (endpoint === '/dashboard' && method === 'GET') {
       const partners = configuredPartners(config);
       const [
-        partnerMoods, latestNote, nextDate, shoppingCount, todayMeals, todayWater,
+        partnerMoods, latestNote, upcomingDatesResult, shoppingCount, todayMeals, todayWater,
         nextMedical, medications, todayDoses, renewals, chores, adminItems,
         shoppingPreview, latestMoment, tonightMeal,
       ] = await Promise.all([
         Promise.all(partners.map(partner => env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(partner).first())),
         env.DB.prepare('SELECT * FROM notes ORDER BY created_at DESC LIMIT 1').first(),
-        env.DB.prepare('SELECT * FROM dates WHERE date >= date("now") ORDER BY date ASC LIMIT 1').first(),
+        env.DB.prepare('SELECT * FROM dates WHERE date >= ? ORDER BY date ASC, id ASC LIMIT 3').bind(today).all(),
         env.DB.prepare('SELECT COUNT(*) as cnt FROM shopping WHERE checked = 0').first(),
-        env.DB.prepare("SELECT * FROM food_diary WHERE date = date('now') ORDER BY time ASC").all(),
-        env.DB.prepare("SELECT SUM(amount_ml) as total FROM water_log WHERE date = date('now')").first(),
-        env.DB.prepare("SELECT * FROM medical_appointments WHERE status = 'Upcoming' AND appointment_date >= date('now') ORDER BY appointment_date, appointment_time LIMIT 1").first(),
+        env.DB.prepare('SELECT * FROM food_diary WHERE date = ? ORDER BY time ASC').bind(today).all(),
+        env.DB.prepare('SELECT SUM(amount_ml) as total FROM water_log WHERE date = ?').bind(today).first(),
+        env.DB.prepare("SELECT * FROM medical_appointments WHERE status = 'Upcoming' AND appointment_date >= ? ORDER BY appointment_date, appointment_time LIMIT 1").bind(today).first(),
         env.DB.prepare('SELECT * FROM medications WHERE active = 1 ORDER BY person, name').all(),
-        env.DB.prepare("SELECT * FROM medication_doses WHERE date(scheduled_at) = date('now') ORDER BY scheduled_at").all(),
-        env.DB.prepare("SELECT * FROM prescription_renewals WHERE status != 'Collected' AND next_order_date IS NOT NULL AND next_order_date <= date('now', '+14 days') ORDER BY next_order_date").all(),
-        env.DB.prepare("SELECT * FROM household_chores WHERE done = 0 AND next_due_date <= date('now') ORDER BY next_due_date").all(),
-        env.DB.prepare("SELECT * FROM home_admin WHERE status != 'Done' AND due_date <= date('now', '+14 days') ORDER BY due_date").all(),
+        env.DB.prepare('SELECT * FROM medication_doses WHERE substr(scheduled_at, 1, 10) = ? ORDER BY scheduled_at').bind(today).all(),
+        env.DB.prepare("SELECT * FROM prescription_renewals WHERE status != 'Collected' AND next_order_date IS NOT NULL AND next_order_date <= ? ORDER BY next_order_date").bind(addCalendarDays(today, 14)).all(),
+        env.DB.prepare('SELECT * FROM household_chores WHERE done = 0 AND next_due_date <= ? ORDER BY next_due_date').bind(today).all(),
+        env.DB.prepare("SELECT * FROM home_admin WHERE status != 'Done' AND due_date <= ? ORDER BY due_date").bind(addCalendarDays(today, 14)).all(),
         env.DB.prepare('SELECT * FROM shopping WHERE checked = 0 ORDER BY created_at DESC LIMIT 5').all(),
         env.DB.prepare('SELECT * FROM moments ORDER BY created_at DESC LIMIT 1').first(),
-        env.DB.prepare("SELECT * FROM meal_plan WHERE plan_date = date('now') LIMIT 1").first(),
+        env.DB.prepare('SELECT * FROM meal_plan WHERE plan_date = ? LIMIT 1').bind(today).first(),
       ]);
       const moods = Object.fromEntries(partners.map((partner, index) => [partner, partnerMoods[index]]));
+      const upcomingDates = upcomingDatesResult.results || [];
       const medicationProgress = medicationProgressForToday(medications.results || [], todayDoses.results || []);
       const dueChores = chores.results || [];
-      const today = new Date().toISOString().slice(0, 10);
       const latest = !latestMoment || (latestNote?.created_at || '') >= (latestMoment.created_at || '')
         ? (latestNote ? { type: 'Note', title: latestNote.content, created_at: latestNote.created_at } : null)
         : { type: 'Moment', title: latestMoment.title, created_at: latestMoment.created_at };
       return json({
-        moods, latestNote, nextDate, shoppingCount: shoppingCount ? shoppingCount.cnt : 0,
+        today, todayLabel: formatLocalLongDate(requestNow), moods, latestNote,
+        nextDate: upcomingDates[0] || null, upcomingDates,
+        shoppingCount: shoppingCount ? shoppingCount.cnt : 0,
         todayMeals: todayMeals.results || [], waterTotal: todayWater ? todayWater.total || 0 : 0,
         nextMedical, medicationProgress, renewals: renewals.results || [],
         household: {
@@ -1010,8 +1018,10 @@ export async function handleAPI(request, env, endpoint, config) {
     if (endpoint === '/moods' && method === 'POST') {
       const b = await readJsonObject(request);
       const partner = requireText(b, 'partner', 80, configuredPartners(config));
-      const mood = requireText(b, 'mood', 20, ['great', 'good', 'okay', 'tired', 'stressed', 'low']);
-      await env.DB.prepare('INSERT INTO moods (partner, mood, note, created_at) VALUES (?, ?, ?, datetime("now"))').bind(partner, mood, optionalText(b, 'note', 2000)).run();
+      const mood = requireText(b, 'mood', 20, MOOD_OPTIONS);
+      const overallScale = optionalOverallScale(b.overall_scale);
+      await env.DB.prepare('INSERT INTO moods (partner, mood, note, overall_scale, created_at) VALUES (?, ?, ?, ?, datetime("now"))')
+        .bind(partner, mood, optionalText(b, 'note', 2000), overallScale).run();
       return json({ success: true });
     }
 
@@ -1077,14 +1087,13 @@ export async function handleAPI(request, env, endpoint, config) {
       const date = new URL(request.url).searchParams.get('date');
       const r = date
         ? await env.DB.prepare('SELECT * FROM food_diary WHERE date = ? ORDER BY time ASC').bind(date).all()
-        : await env.DB.prepare("SELECT * FROM food_diary WHERE date = date('now') ORDER BY time ASC").all();
+        : await env.DB.prepare('SELECT * FROM food_diary WHERE date = ? ORDER BY time ASC').bind(today).all();
       return json({ entries: r.results });
     }
     if (endpoint === '/food' && method === 'POST') {
       const b = await readJsonObject(request);
-      const date = b.date ? requireDate(b) : new Date().toISOString().slice(0, 10);
-      const time = b.time ? requireText(b, 'time', 5) : new Date().toISOString().slice(11, 16);
-      if (!/^\d{2}:\d{2}$/.test(time)) throw Object.assign(new Error('time must use HH:MM'), { status: 400 });
+      const date = b.date ? requireDate(b) : today;
+      const time = b.time ? optionalTimeValue(b.time, 'time') : localTimeKey(requestNow);
       const mealType = requireText(b, 'meal_type', 20, ['breakfast', 'lunch', 'dinner', 'snack']);
       await env.DB.prepare('INSERT INTO food_diary (date, time, meal_type, note, photo_key, created_at) VALUES (?, ?, ?, ?, ?, datetime("now"))').bind(date, time, mealType, optionalText(b, 'note', 4000), optionalText(b, 'photo_key', 500)).run();
       return json({ success: true });
@@ -1098,8 +1107,8 @@ export async function handleAPI(request, env, endpoint, config) {
     }
     if (endpoint === '/food/history' && method === 'GET') {
       const params = new URL(request.url).searchParams;
-      const from = params.get('from') || new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0,10);
-      const to = params.get('to') || new Date().toISOString().slice(0,10);
+      const from = params.get('from') || addCalendarDays(today, -7);
+      const to = params.get('to') || today;
       const r = await env.DB.prepare('SELECT * FROM food_diary WHERE date >= ? AND date <= ? ORDER BY date DESC, time DESC').bind(from, to).all();
       return json({ entries: r.results });
     }
@@ -1109,19 +1118,19 @@ export async function handleAPI(request, env, endpoint, config) {
       const date = new URL(request.url).searchParams.get('date') || null;
       const r = date
         ? await env.DB.prepare('SELECT * FROM water_log WHERE date = ? ORDER BY created_at ASC').bind(date).all()
-        : await env.DB.prepare("SELECT * FROM water_log WHERE date = date('now') ORDER BY created_at ASC").all();
+        : await env.DB.prepare('SELECT * FROM water_log WHERE date = ? ORDER BY created_at ASC').bind(today).all();
       const total = (r.results || []).reduce((sum, e) => sum + e.amount_ml, 0);
       return json({ entries: r.results, total_ml: total });
     }
     if (endpoint === '/water' && method === 'POST') {
       const b = await readJsonObject(request);
-      const date = b.date ? requireDate(b) : new Date().toISOString().slice(0, 10);
+      const date = b.date ? requireDate(b) : today;
       const amount = b.amount_ml === undefined ? 250 : b.amount_ml;
       if (!Number.isInteger(amount) || amount < 1 || amount > 5000) throw Object.assign(new Error('amount_ml must be an integer between 1 and 5000'), { status: 400 });
       await env.DB.prepare('INSERT INTO water_log (date, amount_ml, created_at) VALUES (?, ?, datetime("now"))').bind(date, amount).run();
       const r = date
         ? await env.DB.prepare('SELECT SUM(amount_ml) as total FROM water_log WHERE date = ?').bind(date).first()
-        : await env.DB.prepare("SELECT SUM(amount_ml) as total FROM water_log WHERE date = date('now')").first();
+        : await env.DB.prepare('SELECT SUM(amount_ml) as total FROM water_log WHERE date = ?').bind(today).first();
       return json({ success: true, total_ml: r ? r.total || amount : amount });
     }
     const waterDelMatch = endpoint.match(/^\/water\/(\d+)$/);
@@ -1215,10 +1224,11 @@ export async function handleAPI(request, env, endpoint, config) {
       const existing = await env.DB.prepare('SELECT * FROM medications WHERE id = ?').bind(medicationId).first();
       if (!existing) throw Object.assign(new Error('Medication not found'), { status: 404 });
       if (b.active !== undefined && typeof b.active !== 'boolean') throw inputError('active must be true or false');
+      if (!existing.active && b.active === true) throw inputError('Use the Reactivate action to reactivate a medication');
       const active = b.active === undefined ? Boolean(existing.active) : b.active === true;
       const stoppedDate = active
         ? null
-        : requireIsoDateValue(b.stopped_date || existing.stopped_date || new Date().toISOString().slice(0, 10), 'stopped_date');
+        : requireIsoDateValue(b.stopped_date || existing.stopped_date || today, 'stopped_date');
       const stoppedReason = active
         ? null
         : (b.stopped_reason === undefined
@@ -1258,7 +1268,7 @@ export async function handleAPI(request, env, endpoint, config) {
       if (!Number.isInteger(b.medication_id) || b.medication_id < 1) throw Object.assign(new Error('medication_id must be a positive integer'), { status: 400 });
       const medication = await env.DB.prepare('SELECT * FROM medications WHERE id = ?').bind(b.medication_id).first();
       if (!medication) throw Object.assign(new Error('Medication not found'), { status: 404 });
-      const scheduledAt = requireDateTimeValue(b.scheduled_at || new Date().toISOString().slice(0, 16), 'scheduled_at');
+      const scheduledAt = requireDateTimeValue(b.scheduled_at || localDateTimeKey(requestNow), 'scheduled_at');
       const status = requireChoice(b.status || 'Taken', 'status', DOSE_STATUSES);
       const existingDose = await env.DB.prepare('SELECT id FROM medication_doses WHERE medication_id = ? AND scheduled_at = ?')
         .bind(medication.id, scheduledAt).first();
@@ -1282,11 +1292,11 @@ export async function handleAPI(request, env, endpoint, config) {
     }
     if (endpoint === '/medical/prescriptions' && method === 'POST') {
       const b = await readJsonObject(request);
+      const selection = await resolvePrescriptionMedication(env, b);
       await env.DB.prepare(`INSERT INTO prescription_renewals
         (medication_id, person, medication_name, last_ordered_date, next_order_date, quantity_remaining, status, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(optionalPositiveInteger(b.medication_id, 'medication_id'), requireChoice(b.person, 'person', MEDICAL_PEOPLE),
-          requireText(b, 'medication_name', 300), optionalIsoDateValue(b.last_ordered_date, 'last_ordered_date'),
+        .bind(selection.medicationId, selection.person, selection.medicationName, optionalIsoDateValue(b.last_ordered_date, 'last_ordered_date'),
           optionalIsoDateValue(b.next_order_date, 'next_order_date'), optionalNonNegativeInteger(b.quantity_remaining, 'quantity_remaining'),
           requireChoice(b.status || 'Enough', 'status', PRESCRIPTION_STATUSES), optionalTextValue(b.notes, 4000, 'notes')).run();
       return json({ success: true });
@@ -1294,10 +1304,12 @@ export async function handleAPI(request, env, endpoint, config) {
     const prescriptionMatch = endpoint.match(/^\/medical\/prescriptions\/(\d+)$/);
     if (prescriptionMatch && method === 'PUT') {
       const b = await readJsonObject(request);
+      const existing = await env.DB.prepare('SELECT * FROM prescription_renewals WHERE id = ?').bind(+prescriptionMatch[1]).first();
+      if (!existing) throw Object.assign(new Error('Prescription renewal not found'), { status: 404 });
+      const selection = await resolvePrescriptionMedication(env, b, existing);
       await env.DB.prepare(`UPDATE prescription_renewals SET medication_id = ?, person = ?, medication_name = ?, last_ordered_date = ?,
         next_order_date = ?, quantity_remaining = ?, status = ?, notes = ?, updated_at = datetime("now") WHERE id = ?`)
-        .bind(optionalPositiveInteger(b.medication_id, 'medication_id'), requireChoice(b.person, 'person', MEDICAL_PEOPLE),
-          requireText(b, 'medication_name', 300), optionalIsoDateValue(b.last_ordered_date, 'last_ordered_date'),
+        .bind(selection.medicationId, selection.person, selection.medicationName, optionalIsoDateValue(b.last_ordered_date, 'last_ordered_date'),
           optionalIsoDateValue(b.next_order_date, 'next_order_date'), optionalNonNegativeInteger(b.quantity_remaining, 'quantity_remaining'),
           requireChoice(b.status, 'status', PRESCRIPTION_STATUSES), optionalTextValue(b.notes, 4000, 'notes'), +prescriptionMatch[1]).run();
       return json({ success: true });
@@ -1320,7 +1332,7 @@ export async function handleAPI(request, env, endpoint, config) {
     if (choreCompleteMatch && method === 'POST') {
       const chore = await env.DB.prepare('SELECT * FROM household_chores WHERE id = ?').bind(+choreCompleteMatch[1]).first();
       if (!chore) throw Object.assign(new Error('Chore not found'), { status: 404 });
-      const nextDue = nextChoreDueDate(chore.next_due_date, chore.frequency, chore.recurrence_days);
+      const nextDue = nextChoreDueDate(chore.next_due_date, chore.frequency, chore.recurrence_days, today);
       if (nextDue) {
         await env.DB.prepare('UPDATE household_chores SET next_due_date = ?, done = 0, last_completed_at = datetime("now"), updated_at = datetime("now") WHERE id = ?')
           .bind(nextDue, chore.id).run();
@@ -1363,8 +1375,8 @@ export async function handleAPI(request, env, endpoint, config) {
     /* Food meal planner and lightweight favourites */
     if (endpoint === '/meal-plan' && method === 'GET') {
       const params = new URL(request.url).searchParams;
-      const from = optionalIsoDateValue(params.get('from'), 'from') || new Date().toISOString().slice(0, 10);
-      const to = optionalIsoDateValue(params.get('to'), 'to') || addUtcDays(from, 6);
+      const from = optionalIsoDateValue(params.get('from'), 'from') || today;
+      const to = optionalIsoDateValue(params.get('to'), 'to') || addCalendarDays(from, 6);
       const r = await env.DB.prepare('SELECT * FROM meal_plan WHERE plan_date >= ? AND plan_date <= ? ORDER BY plan_date').bind(from, to).all();
       return json({ meals: r.results || [], from, to });
     }
@@ -1412,7 +1424,8 @@ const MCP_TOOLS = [
   toolDefinition('hearth_mood', 'Mood log', 'Read recent moods or record a mood.', {
     action: enumProperty(['get', 'set'], 'Whether to read or record a mood.'),
     partner: stringProperty('Partner name.', 80),
-    mood: enumProperty(['great', 'good', 'okay', 'tired', 'stressed', 'low'], 'Mood to record.'),
+    mood: enumProperty(MOOD_OPTIONS, 'Mood to record.'),
+    overall_scale: integerProperty('Optional overall daily scale, where 5 is best.', 1, 5),
     note: stringProperty('Optional private note.', 2000),
   }, false, ['action']),
   toolDefinition('hearth_note', 'Fridge notes', 'Read or leave a shared fridge note.', {
@@ -1621,7 +1634,7 @@ async function handleMCP(request, env, config, remainder, scopes = []) {
     return rpcResult(message.id, {
       protocolVersion,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'hearth-dash', version: '1.1.4-crimson.2' },
+      serverInfo: { name: 'hearth-dash', version: '1.1.4-crimson.3' },
       instructions: 'Hearth is a private shared dashboard. Read tools do not change data; write tools change the shared household record.',
     });
   }
@@ -1662,10 +1675,11 @@ async function handleMCP(request, env, config, remainder, scopes = []) {
 
 async function mcpStatus(env, config) {
   const partners = configuredPartners(config);
+  const today = localDateKey();
   const [partnerMoods, latestNote, nextDate] = await Promise.all([
     Promise.all(partners.map(partner => env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 1').bind(partner).first())),
     env.DB.prepare('SELECT * FROM notes ORDER BY created_at DESC LIMIT 1').first(),
-    env.DB.prepare('SELECT * FROM dates WHERE date >= date("now") ORDER BY date ASC LIMIT 1').first()
+    env.DB.prepare('SELECT * FROM dates WHERE date >= ? ORDER BY date ASC, id ASC LIMIT 1').bind(today).first()
   ]);
   const moods = Object.fromEntries(partners.map((partner, index) => [partner, partnerMoods[index]]));
   return json({ moods, latestNote, nextDate });
@@ -1676,7 +1690,12 @@ async function mcpMood(env, params, config) {
   const partner = params.partner || partners[0];
   if (!partner || !partners.includes(partner)) return json({ error: 'partner must be a configured Hearth partner' }, 400);
   if (params.action === 'get') { const r = await env.DB.prepare('SELECT * FROM moods WHERE partner = ? ORDER BY created_at DESC LIMIT 5').bind(partner).all(); return json({ moods: r.results }); }
-  if (params.action === 'set') { await env.DB.prepare('INSERT INTO moods (partner, mood, note, created_at) VALUES (?, ?, ?, datetime("now"))').bind(partner, params.mood, params.note || null).run(); return json({ success: true, message: `Logged ${params.mood} mood for ${partner}` }); }
+  if (params.action === 'set') {
+    const overallScale = optionalOverallScale(params.overall_scale);
+    await env.DB.prepare('INSERT INTO moods (partner, mood, note, overall_scale, created_at) VALUES (?, ?, ?, ?, datetime("now"))')
+      .bind(partner, params.mood, params.note || null, overallScale).run();
+    return json({ success: true, message: `Logged ${params.mood} mood for ${partner}` });
+  }
   return json({ error: 'Invalid action. Use: get, set' });
 }
 
@@ -1693,7 +1712,11 @@ async function mcpMoment(env, params) {
 }
 
 async function mcpDate(env, params) {
-  if (params.action === 'upcoming') { const r = await env.DB.prepare('SELECT * FROM dates WHERE date >= date("now") ORDER BY date ASC LIMIT ?').bind(params.limit || 5).all(); return json({ dates: r.results }); }
+  if (params.action === 'upcoming') {
+    const r = await env.DB.prepare('SELECT * FROM dates WHERE date >= ? ORDER BY date ASC, id ASC LIMIT ?')
+      .bind(localDateKey(), params.limit || 5).all();
+    return json({ dates: r.results });
+  }
   if (params.action === 'add') { await env.DB.prepare('INSERT INTO dates (date, title, recurring, created_at) VALUES (?, ?, ?, datetime("now"))').bind(params.date, params.title, params.recurring ? 1 : 0).run(); return json({ success: true }); }
   return json({ error: 'Invalid action. Use: upcoming, add' });
 }
@@ -1771,22 +1794,24 @@ async function mcpPressure(env, params) {
 }
 
 async function mcpFoodDiaryToday(env, config) {
+  const today = localDateKey();
   const [meals, water, review] = await Promise.all([
-    env.DB.prepare("SELECT * FROM food_diary WHERE date = date('now') ORDER BY time ASC").all(),
-    env.DB.prepare("SELECT SUM(amount_ml) as total FROM water_log WHERE date = date('now')").first(),
-    env.DB.prepare("SELECT * FROM food_reviews WHERE date = date('now')").first()
+    env.DB.prepare('SELECT * FROM food_diary WHERE date = ? ORDER BY time ASC').bind(today).all(),
+    env.DB.prepare('SELECT SUM(amount_ml) as total FROM water_log WHERE date = ?').bind(today).first(),
+    env.DB.prepare('SELECT * FROM food_reviews WHERE date = ?').bind(today).first()
   ]);
   const entries = (meals.results || []).map(m => ({ id: m.id, meal_type: m.meal_type, time: m.time, note: m.note, has_photo: !!m.photo_key }));
   const mealTypes = entries.map(e => e.meal_type);
   const logged = { breakfast: mealTypes.includes('breakfast'), lunch: mealTypes.includes('lunch'), dinner: mealTypes.includes('dinner') };
   const waterTotal = water ? water.total || 0 : 0;
-  return json({ date: new Date().toISOString().slice(0, 10), meals: entries, meals_logged: entries.length, logged, water_ml: waterTotal, water_glasses: Math.floor(waterTotal / 250), water_target_ml: 2000, has_review: !!review, review: review ? review.review : null });
+  return json({ date: today, meals: entries, meals_logged: entries.length, logged, water_ml: waterTotal, water_glasses: Math.floor(waterTotal / 250), water_target_ml: 2000, has_review: !!review, review: review ? review.review : null });
 }
 
 async function mcpFoodDiaryHistory(env, params) {
   const days = params.days || 7;
-  const from = params.from || new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const to = params.to || new Date().toISOString().slice(0, 10);
+  const today = localDateKey();
+  const from = params.from || addCalendarDays(today, -days);
+  const to = params.to || today;
   const [meals, water, reviews] = await Promise.all([
     env.DB.prepare('SELECT * FROM food_diary WHERE date >= ? AND date <= ? ORDER BY date DESC, time ASC').bind(from, to).all(),
     env.DB.prepare('SELECT date, SUM(amount_ml) as total FROM water_log WHERE date >= ? AND date <= ? GROUP BY date').bind(from, to).all(),
@@ -1808,9 +1833,10 @@ async function mcpFoodReview(env, params) {
 }
 
 async function mcpWaterStatus(env) {
+  const today = localDateKey();
   const [todayResult, weekResult] = await Promise.all([
-    env.DB.prepare("SELECT SUM(amount_ml) as total, COUNT(*) as entries FROM water_log WHERE date = date('now')").first(),
-    env.DB.prepare("SELECT date, SUM(amount_ml) as total FROM water_log WHERE date >= date('now', '-7 days') GROUP BY date ORDER BY date").all()
+    env.DB.prepare('SELECT SUM(amount_ml) as total, COUNT(*) as entries FROM water_log WHERE date = ?').bind(today).first(),
+    env.DB.prepare('SELECT date, SUM(amount_ml) as total FROM water_log WHERE date >= ? GROUP BY date ORDER BY date').bind(addCalendarDays(today, -7)).all()
   ]);
   const todayTotal = todayResult ? todayResult.total || 0 : 0;
   const target = 2000;
@@ -1823,7 +1849,7 @@ async function mcpWaterStatus(env) {
   else if (todayTotal < 1500) message = 'Getting there but still under target.';
   else if (todayTotal < 2000) message = 'Almost at target. One more glass.';
   else message = 'Hit the target today.';
-  return json({ date: new Date().toISOString().slice(0, 10), today_ml: todayTotal, today_glasses: Math.floor(todayTotal / 250), target_ml: target, percent: Math.round((todayTotal / target) * 100), entries_today: todayResult ? todayResult.entries || 0 : 0, week_avg_ml: Math.round(avgWeek), week_days: weekDays, message });
+  return json({ date: today, today_ml: todayTotal, today_glasses: Math.floor(todayTotal / 250), target_ml: target, percent: Math.round((todayTotal / target) * 100), entries_today: todayResult ? todayResult.entries || 0 : 0, week_avg_ml: Math.round(avgWeek), week_days: weekDays, message });
 }
 
 /* ========================= PHOTO HANDLERS ========================= */
@@ -1836,7 +1862,7 @@ async function handleFoodPhotoUpload(request, env) {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'];
     if (!allowed.includes(file.type)) return json({ error: 'Invalid file type' }, 400);
     if (file.size > 5 * 1024 * 1024) return json({ error: 'Photo too large (max 5MB)' }, 400);
-    const date = new Date().toISOString().slice(0, 10);
+    const date = localDateKey();
     const id = crypto.randomUUID().slice(0, 8);
     const ext = file.type.split('/')[1] === 'jpeg' ? 'jpg' : file.type.split('/')[1];
     const key = 'food/' + date + '/' + id + '.' + ext;
@@ -2045,6 +2071,39 @@ function optionalNonNegativeInteger(value, name) {
   return integerValue(value, name, { optional: true, min: 0 });
 }
 
+function optionalOverallScale(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 5) {
+    throw inputError('overall_scale must be an integer between 1 and 5');
+  }
+  return value;
+}
+
+async function resolvePrescriptionMedication(env, body, existing = null) {
+  const person = requireChoice(body.person, 'person', MEDICAL_PEOPLE);
+  const medicationId = optionalPositiveInteger(body.medication_id, 'medication_id');
+  if (medicationId === null) {
+    const medicationName = requireText(body, 'medication_name', 300);
+    const isSpecialChoice = medicationName === 'All medications' || medicationName === 'Custom / other';
+    const isUnchangedLegacyChoice = existing && existing.medication_id == null && medicationName === existing.medication_name;
+    if (!isSpecialChoice && !isUnchangedLegacyChoice) {
+      throw inputError('medication_name must be All medications or Custom / other');
+    }
+    return { medicationId: null, person, medicationName };
+  }
+
+  const medication = await env.DB.prepare('SELECT id, person, name, active FROM medications WHERE id = ?').bind(medicationId).first();
+  if (!medication) throw inputError('medication_id must reference an existing medication');
+  if (medication.person !== person) throw inputError('medication_id must belong to the selected person');
+  if (!medication.active) {
+    if (existing && Number(existing.medication_id) === medicationId) {
+      return { medicationId, person, medicationName: existing.medication_name };
+    }
+    throw inputError('medication_id must reference an active medication');
+  }
+  return { medicationId, person, medicationName: medication.name };
+}
+
 export function parseScheduledTimes(value) {
   let values = value;
   if (typeof value === 'string') {
@@ -2071,22 +2130,14 @@ export function medicationProgressForToday(medications, doses) {
 }
 
 export function addUtcDays(dateString, days) {
-  const date = new Date(`${requireIsoDateValue(dateString, 'date')}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
+  return addCalendarDays(requireIsoDateValue(dateString, 'date'), days);
 }
 
 function addUtcMonth(dateString) {
-  const date = new Date(`${requireIsoDateValue(dateString, 'date')}T00:00:00Z`);
-  const day = date.getUTCDate();
-  date.setUTCDate(1);
-  date.setUTCMonth(date.getUTCMonth() + 1);
-  const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
-  date.setUTCDate(Math.min(day, last));
-  return date.toISOString().slice(0, 10);
+  return addCalendarMonths(requireIsoDateValue(dateString, 'date'), 1);
 }
 
-export function nextChoreDueDate(currentDue, frequency, recurrenceDays, today = new Date().toISOString().slice(0, 10)) {
+export function nextChoreDueDate(currentDue, frequency, recurrenceDays, today = localDateKey()) {
   requireChoice(frequency, 'frequency', CHORE_FREQUENCIES);
   if (frequency === 'One-off') return null;
   const base = currentDue > today ? requireIsoDateValue(currentDue, 'next_due_date') : requireIsoDateValue(today, 'today');

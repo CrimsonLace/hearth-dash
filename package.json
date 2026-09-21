@@ -1,6 +1,6 @@
 {
   "name": "hearth-dash",
-  "version": "1.1.4-crimson.2",
+  "version": "1.1.4-crimson.3",
   "private": true,
   "description": "Personal dashboard — moods, moments, food diary, weather, and more. Deploy to Cloudflare in one command.",
   "type": "module",
@@ -35,6 +35,8 @@
   "files": [
     "worker.js",
     "dashboard.js",
+    "date-utils.js",
+    "moods.js",
     "partners.js",
     "oauth-entry.js",
     "schema.sql",

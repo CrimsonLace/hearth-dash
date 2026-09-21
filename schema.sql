@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS moods (
   partner TEXT NOT NULL,
   mood TEXT NOT NULL,
   note TEXT,
+  overall_scale INTEGER CHECK (
+    overall_scale IS NULL
+    OR (typeof(overall_scale) = 'integer' AND overall_scale BETWEEN 1 AND 5)
+  ),
   created_at TEXT NOT NULL
 );
 
