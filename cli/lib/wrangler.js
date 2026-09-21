@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const WRANGLER_BIN = fileURLToPath(new URL('../../node_modules/wrangler/bin/wrangler.js', import.meta.url));
 
 function spawnCmd(cmd, args, opts) {
   if (process.platform === "win32") {
@@ -10,9 +13,18 @@ function spawnCmd(cmd, args, opts) {
   return spawn(cmd, args, opts);
 }
 
+function spawnWrangler(args, opts) {
+  return spawn(process.execPath, [WRANGLER_BIN, ...args], { ...opts, shell: false });
+}
+
+function d1LocationArgs({ local = false, persistTo } = {}) {
+  if (!local) return ["--remote"];
+  return persistTo ? ["--local", `--persist-to=${persistTo}`] : ["--local"];
+}
+
 export function execWrangler(args, cwd, stdinData) {
   return new Promise((resolve) => {
-    const proc = spawnCmd("npx", ["wrangler", ...args], {
+    const proc = spawnWrangler(args, {
       cwd, stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, FORCE_COLOR: "0" },
     });
@@ -59,7 +71,7 @@ export async function checkWranglerAuth(cwd) {
 
 export async function wranglerLogin(cwd) {
   return new Promise((resolve) => {
-    const proc = spawnCmd("npx", ["wrangler", "login"], { cwd, stdio: "inherit" });
+    const proc = spawnWrangler(["login"], { cwd, stdio: "inherit" });
     proc.on("close", (code) => resolve(code === 0));
   });
 }
@@ -68,16 +80,13 @@ export async function setSecret(name, value, cwd) {
   return execWrangler(["secret", "put", name], cwd, value + "\n");
 }
 
-export async function executeSchema(dbName, schemaPath, cwd) {
-  const result = await execWrangler(["d1", "execute", dbName, "--remote", "--file=" + schemaPath], cwd);
-  if (result.code === 0) return { ok: true };
-  const sql = readFileSync(schemaPath, "utf-8");
-  const statements = sql.split(";").map((s) => s.trim()).filter((s) => s.length > 0);
-  for (const stmt of statements) {
-    const r = await execWrangler(["d1", "execute", dbName, "--remote", "--command", stmt + ";"], cwd);
-    if (r.code !== 0) return { ok: false, error: r.stderr || r.stdout };
-  }
-  return { ok: true };
+export async function executeSchema(dbName, schemaPath, cwd, options = {}) {
+  const result = await execWrangler([
+    "d1", "execute", dbName, ...d1LocationArgs(options), `--file=${schemaPath}`, "--yes",
+  ], cwd);
+  return result.code === 0
+    ? { ok: true }
+    : { ok: false, error: result.stderr || result.stdout };
 }
 
 export function parseAppliedMigrations(output) {
@@ -218,15 +227,16 @@ export async function applyPendingMigrations({ files, applied, applyFile, record
   return { ok: true, applied: pending.map(file => basename(file, '.sql')) };
 }
 
-export async function runMigrations(dbName, migrationsDir, cwd) {
+export async function runMigrations(dbName, migrationsDir, cwd, options = {}) {
+  const locationArgs = d1LocationArgs(options);
   const ledger = await execWrangler([
-    'd1', 'execute', dbName, '--remote', '--command',
+    'd1', 'execute', dbName, ...locationArgs, '--command',
     "CREATE TABLE IF NOT EXISTS hearth_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));",
   ], cwd);
   if (ledger.code !== 0) return { ok: false, error: ledger.stderr || ledger.stdout };
 
   const listed = await execWrangler([
-    'd1', 'execute', dbName, '--remote', '--command',
+    'd1', 'execute', dbName, ...locationArgs, '--command',
     'SELECT version FROM hearth_migrations ORDER BY version;', '--json',
   ], cwd);
   if (listed.code !== 0) return { ok: false, error: listed.stderr || listed.stdout };
@@ -242,7 +252,7 @@ export async function runMigrations(dbName, migrationsDir, cwd) {
   return applyPendingMigrations({
     files,
     applied,
-    applyFile: file => executeSchema(dbName, join(migrationsDir, file), cwd),
+    applyFile: file => executeSchema(dbName, join(migrationsDir, file), cwd, options),
     async reconcile(_file, version) {
       if (version !== '002_mood_overall_scale') return { ok: true, applied: false };
       const query = `SELECT m.sql AS table_sql,
@@ -255,7 +265,7 @@ export async function runMigrations(dbName, migrationsDir, cwd) {
       LEFT JOIN pragma_table_info('moods') AS p ON p.name = 'overall_scale'
       WHERE m.type = 'table' AND m.name = 'moods';`;
       const inspected = await execWrangler([
-        'd1', 'execute', dbName, '--remote', '--command', query, '--json',
+        'd1', 'execute', dbName, ...locationArgs, '--command', query, '--json',
       ], cwd);
       if (inspected.code !== 0) return { ok: false, error: inspected.stderr || inspected.stdout };
       try {
@@ -267,7 +277,7 @@ export async function runMigrations(dbName, migrationsDir, cwd) {
     async record(version) {
       const escaped = version.replaceAll("'", "''");
       const result = await execWrangler([
-        'd1', 'execute', dbName, '--remote', '--command',
+        'd1', 'execute', dbName, ...locationArgs, '--command',
         `INSERT INTO hearth_migrations (version) VALUES ('${escaped}');`,
       ], cwd);
       return result.code === 0 ? { ok: true } : { ok: false, error: result.stderr || result.stdout };
