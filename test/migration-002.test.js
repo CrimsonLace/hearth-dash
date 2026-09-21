@@ -1,14 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-  applyPendingMigrations, classifyMoodOverallScaleSchema, freshMigrationBaselineSql, pendingMigrationFiles,
+  applyPendingMigrations, classifyMoodOverallScaleSchema, execWrangler, executeSchema,
+  freshMigrationBaselineSql, pendingMigrationFiles, runMigrations,
 } from '../cli/lib/wrangler.js';
 
 const migration = readFileSync(new URL('../migrations/002_mood_overall_scale.sql', import.meta.url), 'utf8');
 const schema = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
 const migrationFiles = ['001_life_dashboard.sql', '002_mood_overall_scale.sql'];
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function legacyDatabase() {
   const db = new DatabaseSync(':memory:');
@@ -175,4 +180,87 @@ test('ledger failure after migration application is safely reconciled on retry',
   assert.equal(retry.result.ok, true);
   assert.equal(retry.applyCount, 0);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hearth_migrations WHERE version = '002_mood_overall_scale'").get().count, 1);
+});
+
+test('real Wrangler runner applies migration 002 intact and remains idempotent', { timeout: 60_000 }, async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'hearth-migration-002-'));
+  const persistTo = join(tempRoot, 'd1-state');
+  const migrationsDir = join(tempRoot, 'migrations');
+  mkdirSync(migrationsDir, { recursive: true });
+  writeFileSync(join(migrationsDir, '002_mood_overall_scale.sql'), migration, 'utf8');
+  const seedPath = join(tempRoot, 'pre-002.sql');
+  writeFileSync(seedPath, `CREATE TABLE moods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner TEXT NOT NULL,
+    mood TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE hearth_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  INSERT INTO hearth_migrations (version) VALUES ('001_life_dashboard');
+  INSERT INTO moods (partner, mood, note, created_at)
+    VALUES ('Crimson', 'good', 'keep me', '2026-09-20 10:00:00');`, 'utf8');
+
+  try {
+    assert.deepEqual(await executeSchema('hearth-dash-db', seedPath, repoRoot, { local: true, persistTo }), { ok: true });
+
+    const first = await runMigrations('hearth-dash-db', migrationsDir, repoRoot, { local: true, persistTo });
+    assert.deepEqual(first, { ok: true, applied: ['002_mood_overall_scale'] });
+
+    const verified = await execWrangler([
+      'd1', 'execute', 'hearth-dash-db', '--local', `--persist-to=${persistTo}`, '--json', '--command',
+      "SELECT partner, mood, note, overall_scale FROM moods; SELECT version FROM hearth_migrations ORDER BY version;",
+    ], repoRoot);
+    assert.equal(verified.code, 0, verified.stderr);
+    const envelopes = JSON.parse(verified.stdout);
+    assert.deepEqual(envelopes[0].results, [{ partner: 'Crimson', mood: 'good', note: 'keep me', overall_scale: null }]);
+    assert.deepEqual(envelopes[1].results, [{ version: '001_life_dashboard' }, { version: '002_mood_overall_scale' }]);
+
+    for (const invalid of ['0', '2.5', '6']) {
+      const rejected = await execWrangler([
+        'd1', 'execute', 'hearth-dash-db', '--local', `--persist-to=${persistTo}`, '--command',
+        `INSERT INTO moods (partner, mood, overall_scale, created_at) VALUES ('Elijah', 'okay', ${invalid}, '2026-09-21 10:00:00');`,
+      ], repoRoot);
+      assert.notEqual(rejected.code, 0, `overall_scale ${invalid} should violate the CHECK constraint`);
+      assert.match(rejected.stderr, /CHECK constraint failed/);
+    }
+
+    const retry = await runMigrations('hearth-dash-db', migrationsDir, repoRoot, { local: true, persistTo });
+    assert.deepEqual(retry, { ok: true, applied: [] });
+    const ledger = await execWrangler([
+      'd1', 'execute', 'hearth-dash-db', '--local', `--persist-to=${persistTo}`, '--json', '--command',
+      "SELECT COUNT(*) AS count FROM hearth_migrations WHERE version = '002_mood_overall_scale';",
+    ], repoRoot);
+    assert.equal(ledger.code, 0, ledger.stderr);
+    assert.equal(JSON.parse(ledger.stdout)[0].results[0].count, 1);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('file transport preserves multiline SQL and semicolons inside quoted strings', { timeout: 60_000 }, async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'hearth-migration-transport-'));
+  const persistTo = join(tempRoot, 'd1-state');
+  const sqlPath = join(tempRoot, 'multiline.sql');
+  writeFileSync(sqlPath, `CREATE TABLE transport_test (
+    id INTEGER PRIMARY KEY,
+    value TEXT CHECK (value IS NULL OR instr(value, ';') > 0)
+  );
+  INSERT INTO transport_test (value)
+  VALUES ('kept;inside');`, 'utf8');
+
+  try {
+    assert.deepEqual(await executeSchema('hearth-dash-db', sqlPath, repoRoot, { local: true, persistTo }), { ok: true });
+    const queried = await execWrangler([
+      'd1', 'execute', 'hearth-dash-db', '--local', `--persist-to=${persistTo}`, '--json', '--command',
+      'SELECT value FROM transport_test;',
+    ], repoRoot);
+    assert.equal(queried.code, 0, queried.stderr);
+    assert.deepEqual(JSON.parse(queried.stdout)[0].results, [{ value: 'kept;inside' }]);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
