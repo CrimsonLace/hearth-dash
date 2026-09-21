@@ -110,13 +110,43 @@ test('implements MCP initialize and scoped tool discovery over JSON-RPC', async 
   const initBody = await initialized.json();
   assert.equal(initBody.result.protocolVersion, '2025-06-18');
   assert.deepEqual(initBody.result.capabilities, { tools: { listChanged: false } });
-  assert.equal(initBody.result.serverInfo.version, '1.1.4-crimson.3');
+  assert.equal(initBody.result.serverInfo.version, '1.1.4-crimson.4');
 
   const listed = await callMcp({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, env(), ['hearth:read'], { 'MCP-Protocol-Version': '2025-06-18' });
   const listBody = await listed.json();
   assert.ok(listBody.result.tools.length >= 10);
   assert.ok(listBody.result.tools.every(tool => tool.inputSchema?.type === 'object'));
   assert.ok(!listBody.result.tools.some(tool => tool.name === 'hearth_food_review'));
+  assert.ok(listBody.result.tools.some(tool => tool.name === 'hearth_resource_read'));
+  assert.ok(!listBody.result.tools.some(tool => tool.name === 'hearth_resource_create'));
+  assert.ok(!listBody.result.tools.some(tool => tool.name === 'hearth_resource_update'));
+
+  const allTools = await callMcp({ jsonrpc: '2.0', id: 22, method: 'tools/list', params: {} }, env(), ['hearth:read', 'hearth:write'], { 'MCP-Protocol-Version': '2025-06-18' });
+  const allNames = (await allTools.json()).result.tools.map(tool => tool.name);
+  assert.ok(allNames.includes('hearth_resource_read'));
+  assert.ok(allNames.includes('hearth_resource_create'));
+  assert.ok(allNames.includes('hearth_resource_update'));
+});
+
+test('resource MCP tools enforce scopes and strict resource validation', async () => {
+  const read = await callMcp({ jsonrpc: '2.0', id: 23, method: 'tools/call', params: {
+    name: 'hearth_resource_read', arguments: { resource: 'notes', filters: { limit: 5 } },
+  } }, env({ PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: 'Elijah' }), ['hearth:read']);
+  const readBody = await read.json();
+  assert.equal(readBody.result.isError, false);
+  assert.deepEqual(readBody.result.structuredContent.records, []);
+
+  const denied = await callMcp({ jsonrpc: '2.0', id: 24, method: 'tools/call', params: {
+    name: 'hearth_resource_create', arguments: { resource: 'note', actor: 'Jace', data: { content: 'secret text' } },
+  } }, env({ PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: 'Elijah' }), ['hearth:read']);
+  assert.match((await denied.json()).result.content[0].text, /hearth:write/);
+
+  const invalid = await callMcp({ jsonrpc: '2.0', id: 25, method: 'tools/call', params: {
+    name: 'hearth_resource_create', arguments: { resource: 'note', actor: 'Crimson', data: { content: 'x', sql: 'no' } },
+  } }, env({ PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: 'Elijah' }), ['hearth:read', 'hearth:write']);
+  const invalidBody = await invalid.json();
+  assert.equal(invalidBody.result.isError, true);
+  assert.match(invalidBody.result.content[0].text, /unknown field|actor must/);
 });
 
 test('rejects the old custom tool/params format', async () => {

@@ -94,7 +94,7 @@ export function getRedesignedDashboardHTML(config) {
       <article class="card half"><h2>Food review</h2><form id="review-form"><label>Date<input type="date" name="date" required></label><label>Reviewer<input name="reviewer" maxlength="80" value="AI"></label><label>Review<textarea name="review" maxlength="6000" required></textarea></label><button class="btn">Save review</button></form><div id="review-list" class="stack" style="margin-top:1rem"></div></article>
     </div></section>
   </main>
-  <footer>Hearth · private, practical, and yours · 1.1.4-crimson.3</footer>
+  <footer>Hearth · private, practical, and yours · 1.1.4-crimson.4</footer>
 </div>
 <script>
   const PARTNERS=${inlineJson(partners)};

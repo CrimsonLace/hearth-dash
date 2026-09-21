@@ -117,7 +117,7 @@ test('renders the warm responsive dashboard without visible weather or pressure 
   assert.match(html, /O&#39;Malley/);
   assert.doesNotMatch(html, /<svg onload=alert\(1\)>/);
   assert.match(html, /&lt;svg onload=alert\(1\)&gt;/);
-  assert.match(html, /1\.1\.4-crimson\.3/);
+  assert.match(html, /1\.1\.4-crimson\.4/);
 });
 
 test('normalizes optional partner configuration and preserves two-person fallback', () => {
@@ -160,7 +160,7 @@ test('fork documentation never presents the upstream package as an executable co
   assert.deepEqual(operationalLines, []);
   assert.match(readme, /Do not use[^\n]*hearth-dash@latest deploy/);
   assert.match(readme, /CrimsonLace\/hearth-dash/);
-  assert.equal(packageJson.version, '1.1.4-crimson.3');
+  assert.equal(packageJson.version, '1.1.4-crimson.4');
   assert.equal(packageJson.private, true);
 });
 
@@ -188,6 +188,7 @@ test('creates and edits a medical appointment while keeping medical people indep
 
   assert.equal((await handleAPI(request({ ...body, status: 'Completed' }, 'PUT'), { DB: db }, '/medical/appointments/7', config)).status, 200);
   assert.match(db.statements[1].sql, /UPDATE medical_appointments/);
+  assert.match(db.statements[1].sql, /revision = revision \+ 1/);
   assert.equal(db.statements[1].args.at(-1), 7);
 
   const rejected = await handleAPI(request({ ...body, person: 'Elijah' }), { DB: db }, '/medical/appointments', config);
@@ -375,6 +376,7 @@ test('calculates recurring chores from the later of due date and completion day'
   const response = await handleAPI(request({}, 'POST'), { DB: db }, '/household/3/complete', config);
   assert.equal(response.status, 200);
   assert.match(db.statements.at(-1).sql, /UPDATE household_chores SET next_due_date/);
+  assert.match(db.statements.at(-1).sql, /revision = revision \+ 1/);
 });
 
 test('stores home-admin status and meal planning without duplicating shopping storage', async () => {
