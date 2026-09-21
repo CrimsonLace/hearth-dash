@@ -18,7 +18,11 @@ Hearth is a small shared-life dashboard for configurable partners. It runs as a 
 > installation. **Do not use `npx hearth-dash@latest deploy`**: customized deployments must
 > run from a checked-out copy of `CrimsonLace/hearth-dash`.
 
-This fork identifies itself as **1.1.4-crimson.2** without publishing an npm package.
+This fork identifies itself as **1.1.4-crimson.3** without publishing an npm package.
+
+Calendar-day features use the `Europe/London` timezone, including dashboard summaries,
+medical schedules, household due dates, meal planning, food and water logs, and upcoming dates.
+UTC remains authoritative for timestamps that represent real instants.
 
 ## Features
 

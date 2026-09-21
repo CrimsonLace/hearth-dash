@@ -1,6 +1,7 @@
 ﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applicationHandler, isOAuthRoute, oauthApiHandler, oauthDefaultHandler } from '../worker.js';
+import { addCalendarDays, localDateKey } from '../date-utils.js';
 
 class FakeD1 {
   constructor() {
@@ -32,6 +33,7 @@ class FakeD1 {
         return { success: true };
       },
       async first() {
+        db.statements.push({ kind: 'first', sql, args: this.args });
         if (sql.startsWith('SELECT count FROM rate_limits')) return { count: db.counts.get(this.args[0]) || 0 };
         if (sql.startsWith('DELETE FROM oauth_csrf_tokens WHERE token')) {
           const record = db.oauthCsrf.get(this.args[0]);
@@ -108,7 +110,7 @@ test('implements MCP initialize and scoped tool discovery over JSON-RPC', async 
   const initBody = await initialized.json();
   assert.equal(initBody.result.protocolVersion, '2025-06-18');
   assert.deepEqual(initBody.result.capabilities, { tools: { listChanged: false } });
-  assert.equal(initBody.result.serverInfo.version, '1.1.4-crimson.2');
+  assert.equal(initBody.result.serverInfo.version, '1.1.4-crimson.3');
 
   const listed = await callMcp({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, env(), ['hearth:read'], { 'MCP-Protocol-Version': '2025-06-18' });
   const listBody = await listed.json();
@@ -140,13 +142,24 @@ test('MCP status and mood support every configured partner and reject unknown na
   }, testEnv, ['hearth:read']);
   assert.deepEqual((await status.json()).result.structuredContent.moods, { One: null, Two: null, Elijah: null });
 
-  const set = await callMcp({
-    jsonrpc: '2.0', id: 31, method: 'tools/call',
-    params: { name: 'hearth_mood', arguments: { action: 'set', partner: 'Elijah', mood: 'good' } },
+  for (const [index, partner] of ['One', 'Two', 'Elijah'].entries()) {
+    const set = await callMcp({
+      jsonrpc: '2.0', id: 31 + index, method: 'tools/call',
+      params: { name: 'hearth_mood', arguments: { action: 'set', partner, mood: 'horny', overall_scale: index + 1 } },
+    }, testEnv, ['hearth:read', 'hearth:write']);
+    assert.equal((await set.json()).result.isError, false);
+  }
+  const inserts = testEnv.DB.statements.filter(statement => statement.sql.startsWith('INSERT INTO moods'));
+  assert.deepEqual(inserts.map(statement => statement.args.slice(0, 4)), [
+    ['One', 'horny', null, 1], ['Two', 'horny', null, 2], ['Elijah', 'horny', null, 3],
+  ]);
+
+  const omitted = await callMcp({
+    jsonrpc: '2.0', id: 34, method: 'tools/call',
+    params: { name: 'hearth_mood', arguments: { action: 'set', partner: 'Elijah', mood: 'tired' } },
   }, testEnv, ['hearth:read', 'hearth:write']);
-  assert.equal((await set.json()).result.isError, false);
-  const insert = testEnv.DB.statements.find(statement => statement.sql.startsWith('INSERT INTO moods'));
-  assert.deepEqual(insert.args.slice(0, 2), ['Elijah', 'good']);
+  assert.equal((await omitted.json()).result.isError, false);
+  assert.equal(testEnv.DB.statements.filter(statement => statement.sql.startsWith('INSERT INTO moods')).at(-1).args[3], null);
 
   const rejected = await callMcp({
     jsonrpc: '2.0', id: 32, method: 'tools/call',
@@ -155,6 +168,55 @@ test('MCP status and mood support every configured partner and reject unknown na
   const rejectedBody = await rejected.json();
   assert.equal(rejectedBody.result.isError, true);
   assert.match(rejectedBody.result.content[0].text, /configured Hearth partner/);
+});
+
+test('MCP mood advertises and enforces horny plus the optional integer scale', async () => {
+  const testEnv = env({ PARTNER_1: 'Crimson', PARTNER_2: 'Jace', PARTNER_3: 'Elijah' });
+  const listed = await callMcp({ jsonrpc: '2.0', id: 40, method: 'tools/list', params: {} }, testEnv, ['hearth:read']);
+  const moodTool = (await listed.json()).result.tools.find(tool => tool.name === 'hearth_mood');
+  assert.ok(moodTool.inputSchema.properties.mood.enum.includes('horny'));
+  assert.deepEqual(moodTool.inputSchema.properties.overall_scale, {
+    type: 'integer', description: 'Optional overall daily scale, where 5 is best.', minimum: 1, maximum: 5,
+  });
+
+  for (const overall_scale of [1, 2, 3, 4, 5]) {
+    const accepted = await callMcp({
+      jsonrpc: '2.0', id: 41 + overall_scale, method: 'tools/call',
+      params: { name: 'hearth_mood', arguments: { action: 'set', partner: 'Crimson', mood: 'horny', overall_scale } },
+    }, testEnv, ['hearth:read', 'hearth:write']);
+    assert.equal((await accepted.json()).result.isError, false);
+  }
+  const before = testEnv.DB.statements.filter(statement => statement.sql.startsWith('INSERT INTO moods')).length;
+  for (const overall_scale of [0, 6, 2.5, '3', true, false]) {
+    const rejected = await callMcp({
+      jsonrpc: '2.0', id: 50, method: 'tools/call',
+      params: { name: 'hearth_mood', arguments: { action: 'set', partner: 'Crimson', mood: 'horny', overall_scale } },
+    }, testEnv, ['hearth:read', 'hearth:write']);
+    assert.equal((await rejected.json()).result.isError, true, JSON.stringify(overall_scale));
+  }
+  assert.equal(testEnv.DB.statements.filter(statement => statement.sql.startsWith('INSERT INTO moods')).length, before);
+});
+
+test('MCP calendar-day reads bind Europe/London dates', async () => {
+  const testEnv = env();
+  const today = localDateKey();
+  for (const [id, name, args] of [
+    [60, 'hearth_status', {}],
+    [61, 'hearth_date', { action: 'upcoming' }],
+    [62, 'hearth_food_diary_today', {}],
+    [63, 'hearth_food_diary_history', { days: 7 }],
+    [64, 'hearth_water_status', {}],
+  ]) {
+    const response = await callMcp({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }, testEnv, ['hearth:read']);
+    assert.equal((await response.json()).result.isError, false, name);
+  }
+  const statements = testEnv.DB.statements.filter(statement => /dates|food_diary|water_log|food_reviews/.test(statement.sql));
+  assert.ok(statements.some(statement => statement.sql.includes('dates WHERE date >= ?') && statement.args[0] === today));
+  assert.ok(statements.some(statement => statement.sql.includes('food_diary WHERE date = ?') && statement.args[0] === today));
+  assert.ok(statements.some(statement => statement.sql.includes('water_log WHERE date = ?') && statement.args[0] === today));
+  assert.ok(statements.some(statement => statement.sql.includes('food_diary WHERE date >= ?')
+    && statement.args[0] === addCalendarDays(today, -7) && statement.args[1] === today));
+  assert.ok(statements.every(statement => !/date\(["']now["']/.test(statement.sql)));
 });
 
 test('shopping MCP keeps the existing Partner 2 default used by Railway', async () => {

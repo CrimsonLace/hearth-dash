@@ -105,12 +105,113 @@ export function pendingMigrationFiles(files, applied) {
     .filter(file => !applied.has(basename(file, '.sql')));
 }
 
-export async function applyPendingMigrations({ files, applied, applyFile, record }) {
+export function freshMigrationBaselineSql(files) {
+  const versions = pendingMigrationFiles(files, new Set())
+    .map(file => basename(file, '.sql'));
+  if (!versions.length) return null;
+  const values = versions
+    .map(version => `('${version.replaceAll("'", "''")}')`)
+    .join(', ');
+  return `INSERT INTO hearth_migrations (version) VALUES ${values} ON CONFLICT(version) DO NOTHING;`;
+}
+
+export async function baselineFreshMigrations(dbName, migrationsDir, cwd) {
+  const sql = freshMigrationBaselineSql(readdirSync(migrationsDir));
+  if (!sql) return { ok: true, applied: [] };
+  const result = await execWrangler([
+    'd1', 'execute', dbName, '--remote', '--command', sql,
+  ], cwd);
+  if (result.code !== 0) return { ok: false, error: result.stderr || result.stdout };
+  return {
+    ok: true,
+    applied: pendingMigrationFiles(readdirSync(migrationsDir), new Set())
+      .map(file => basename(file, '.sql')),
+  };
+}
+
+function createTableColumnDefinition(createSql, columnName) {
+  if (typeof createSql !== 'string') return null;
+  const open = createSql.indexOf('(');
+  const close = createSql.lastIndexOf(')');
+  if (open < 0 || close <= open) return null;
+
+  const definitions = [];
+  let start = open + 1;
+  let depth = 0;
+  let quote = null;
+  for (let i = start; i < close; i += 1) {
+    const char = createSql[i];
+    if (quote) {
+      if (char === quote) {
+        if (createSql[i + 1] === quote) i += 1;
+        else quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    else if (char === ')') depth -= 1;
+    else if (char === ',' && depth === 0) {
+      definitions.push(createSql.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  definitions.push(createSql.slice(start, close).trim());
+
+  const expectedName = columnName.toLowerCase();
+  return definitions.find((definition) => {
+    const match = definition.match(/^(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([^\s]+))/);
+    const name = match && (match[1] || match[2] || match[3] || match[4]);
+    return name?.toLowerCase() === expectedName;
+  }) || null;
+}
+
+export function classifyMoodOverallScaleSchema(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+  } catch (error) {
+    throw new Error('Could not parse the overall_scale schema inspection response.', { cause: error });
+  }
+  const envelopes = Array.isArray(parsed) ? parsed : [parsed];
+  if (!envelopes.length || envelopes.some(item => !item || typeof item !== 'object' || !Array.isArray(item.results))) {
+    throw new Error('The overall_scale schema inspection response had an unexpected shape.');
+  }
+  const rows = envelopes.flatMap(item => item.results);
+  if (rows.length !== 1 || typeof rows[0]?.table_sql !== 'string') {
+    throw new Error('Could not verify the moods table before reconciling migration 002.');
+  }
+  const row = rows[0];
+  if (row.column_name == null) return 'absent';
+
+  const definition = createTableColumnDefinition(row.table_sql, 'overall_scale');
+  const normalized = definition?.replace(/\s+/g, '').toLowerCase();
+  const expected = "overall_scaleintegercheck(overall_scaleisnullor(typeof(overall_scale)='integer'andoverall_scalebetween1and5))";
+  const exactColumnShape = row.column_name === 'overall_scale'
+    && String(row.column_type).toUpperCase() === 'INTEGER'
+    && Number(row.column_notnull) === 0
+    && row.column_default == null
+    && Number(row.column_pk) === 0
+    && normalized === expected;
+  if (!exactColumnShape) {
+    throw new Error('Migration 002 is absent from the ledger, but moods.overall_scale does not match the expected schema. Manual intervention is required.');
+  }
+  return 'expected';
+}
+
+export async function applyPendingMigrations({ files, applied, applyFile, record, reconcile = async () => ({ ok: true, applied: false }) }) {
   const pending = pendingMigrationFiles(files, applied);
   for (const file of pending) {
     const version = basename(file, '.sql');
-    const result = await applyFile(file);
-    if (!result.ok) return { ok: false, version, error: result.error || 'migration failed', applied: [] };
+    const state = await reconcile(file, version);
+    if (!state.ok) return { ok: false, version, error: state.error || 'could not reconcile migration state', applied: [] };
+    if (!state.applied) {
+      const result = await applyFile(file);
+      if (!result.ok) return { ok: false, version, error: result.error || 'migration failed', applied: [] };
+    }
     const recorded = await record(version);
     if (!recorded.ok) return { ok: false, version, error: recorded.error || 'could not record migration', applied: [] };
   }
@@ -142,6 +243,27 @@ export async function runMigrations(dbName, migrationsDir, cwd) {
     files,
     applied,
     applyFile: file => executeSchema(dbName, join(migrationsDir, file), cwd),
+    async reconcile(_file, version) {
+      if (version !== '002_mood_overall_scale') return { ok: true, applied: false };
+      const query = `SELECT m.sql AS table_sql,
+        p.name AS column_name,
+        p.type AS column_type,
+        p."notnull" AS column_notnull,
+        p.dflt_value AS column_default,
+        p.pk AS column_pk
+      FROM sqlite_master AS m
+      LEFT JOIN pragma_table_info('moods') AS p ON p.name = 'overall_scale'
+      WHERE m.type = 'table' AND m.name = 'moods';`;
+      const inspected = await execWrangler([
+        'd1', 'execute', dbName, '--remote', '--command', query, '--json',
+      ], cwd);
+      if (inspected.code !== 0) return { ok: false, error: inspected.stderr || inspected.stdout };
+      try {
+        return { ok: true, applied: classifyMoodOverallScaleSchema(inspected.stdout) === 'expected' };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : 'Could not verify migration 002 state.' };
+      }
+    },
     async record(version) {
       const escaped = version.replaceAll("'", "''");
       const result = await execWrangler([
