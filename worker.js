@@ -1,6 +1,6 @@
 import { getRedesignedDashboardHTML } from './dashboard.js';
 import {
-  addCalendarDays, addCalendarMonths, formatLocalLongDate, localDateKey, localDateTimeKey, localTimeKey,
+  addCalendarDays, addCalendarMonths, formatLocalLongDate, isValidLocalDateTime, localDateKey, localDateTimeKey, localTimeKey,
 } from './date-utils.js';
 import { MOOD_OPTIONS } from './moods.js';
 import { configuredPartners } from './partners.js';
@@ -944,7 +944,7 @@ function renderOAuthConsentPage(action, oauthRequest, client, csrf, signedIn, er
   const scopes = (oauthRequest.scope?.length ? oauthRequest.scope : ['hearth:read'])
     .filter(scope => OAUTH_SCOPES.includes(scope));
   const permissions = scopes.map(scope => scope === 'hearth:write'
-    ? '<li><strong>Write:</strong> add moods, notes, moments, dates, shopping items and food reviews</li>'
+    ? '<li><strong>Write:</strong> create and update supported Medical, Household, Home Admin, Food and shared-life Hearth records</li>'
     : '<li><strong>Read:</strong> view the shared Hearth dashboard data</li>').join('');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1076,8 +1076,13 @@ export async function handleAPI(request, env, endpoint, config) {
     }
     const shopCheckMatch = endpoint.match(/^\/shopping\/(\d+)\/check$/);
     if (shopCheckMatch && method === 'POST') {
-      await env.DB.prepare('UPDATE shopping SET checked = CASE WHEN checked = 0 THEN 1 ELSE 0 END, revision = revision + 1 WHERE id = ?').bind(+shopCheckMatch[1]).run();
-      return json({ success: true });
+      const b = await readJsonObject(request);
+      if (typeof b.checked !== 'boolean') throw inputError('checked must be true or false');
+      const id = +shopCheckMatch[1];
+      const record = await browserRevisionUpdate(env, 'shopping', id, requireExpectedRevision(b),
+        'UPDATE shopping SET checked = ?, revision = revision + 1 WHERE id = ? AND revision = ?', [b.checked ? 1 : 0],
+        existing => Boolean(existing.checked) === b.checked);
+      return json({ success: true, checked: Boolean(record.checked), revision: record.revision });
     }
     const shopDelMatch = endpoint.match(/^\/shopping\/(\d+)$/);
     if (shopDelMatch && method === 'DELETE') {
@@ -1154,10 +1159,14 @@ export async function handleAPI(request, env, endpoint, config) {
     }
     if (endpoint === '/food/reviews' && method === 'POST') {
       const b = await readJsonObject(request);
-      await env.DB.prepare(`INSERT INTO food_reviews (date, review, reviewer, created_at) VALUES (?, ?, ?, datetime("now"))
-        ON CONFLICT(date) DO UPDATE SET review = excluded.review, reviewer = excluded.reviewer,
-        created_at = datetime("now"), revision = food_reviews.revision + 1`).bind(requireDate(b), requireText(b, 'review', 6000), b.reviewer ? requireText(b, 'reviewer', 80) : 'AI').run();
-      return json({ success: true });
+      try {
+        const result = await env.DB.prepare('INSERT INTO food_reviews (date, review, reviewer, created_at) VALUES (?, ?, ?, datetime("now"))')
+          .bind(requireDate(b), requireText(b, 'review', 6000), b.reviewer ? requireText(b, 'reviewer', 80) : 'AI').run();
+        return json({ success: true, id: Number(result?.meta?.last_row_id || 0), revision: 1 });
+      } catch (error) {
+        if (isUniqueConflict(error)) throw Object.assign(new Error('A food review already exists for that date'), { status: 409 });
+        throw error;
+      }
     }
 
     /* Quick Capture (stored as an ordinary note, not a parallel inbox) */
@@ -1191,17 +1200,17 @@ export async function handleAPI(request, env, endpoint, config) {
     const appointmentMatch = endpoint.match(/^\/medical\/appointments\/(\d+)$/);
     if (appointmentMatch && method === 'PUT') {
       const b = await readJsonObject(request);
-      await env.DB.prepare(`UPDATE medical_appointments SET person = ?, appointment_date = ?, appointment_time = ?, location = ?,
-        clinic = ?, clinician = ?, reason = ?, notes = ?, status = ?, transport_needed = ?, preparation_needed = ?, updated_at = datetime("now"), revision = revision + 1 WHERE id = ?`)
-        .bind(
+      const id = +appointmentMatch[1];
+      const record = await browserRevisionUpdate(env, 'medical_appointments', id, requireExpectedRevision(b), `UPDATE medical_appointments SET person = ?, appointment_date = ?, appointment_time = ?, location = ?,
+        clinic = ?, clinician = ?, reason = ?, notes = ?, status = ?, transport_needed = ?, preparation_needed = ?, updated_at = datetime("now"), revision = revision + 1 WHERE id = ? AND revision = ?`, [
           requireChoice(b.person, 'person', MEDICAL_PEOPLE), requireIsoDateValue(b.appointment_date, 'appointment_date'),
           optionalTimeValue(b.appointment_time, 'appointment_time'), optionalTextValue(b.location, 300, 'location'),
           optionalTextValue(b.clinic, 300, 'clinic'), optionalTextValue(b.clinician, 300, 'clinician'),
           requireText(b, 'reason', 500), optionalTextValue(b.notes, 4000, 'notes'),
           requireChoice(b.status, 'status', APPOINTMENT_STATUSES), b.transport_needed === true ? 1 : 0,
-          optionalTextValue(b.preparation_needed, 1000, 'preparation_needed'), +appointmentMatch[1],
-        ).run();
-      return json({ success: true });
+          optionalTextValue(b.preparation_needed, 1000, 'preparation_needed'),
+        ]);
+      return json({ success: true, revision: record.revision });
     }
 
     if (endpoint === '/medical/medications' && method === 'GET') {
@@ -1239,25 +1248,23 @@ export async function handleAPI(request, env, endpoint, config) {
         : (b.stopped_reason === undefined
           ? optionalTextValue(existing.stopped_reason, 1000, 'stopped_reason')
           : optionalTextValue(b.stopped_reason, 1000, 'stopped_reason'));
-      await env.DB.prepare(`UPDATE medications SET person = ?, name = ?, strength = ?, dose = ?, frequency = ?, scheduled_times = ?,
-        prescribing_source = ?, notes = ?, active = ?, start_date = ?, stopped_date = ?, stopped_reason = ?, updated_at = datetime("now"), revision = revision + 1 WHERE id = ?`)
-        .bind(
+      const record = await browserRevisionUpdate(env, 'medications', medicationId, requireExpectedRevision(b), `UPDATE medications SET person = ?, name = ?, strength = ?, dose = ?, frequency = ?, scheduled_times = ?,
+        prescribing_source = ?, notes = ?, active = ?, start_date = ?, stopped_date = ?, stopped_reason = ?, updated_at = datetime("now"), revision = revision + 1 WHERE id = ? AND revision = ?`, [
           requireChoice(b.person, 'person', MEDICAL_PEOPLE), requireText(b, 'name', 300),
           optionalTextValue(b.strength, 100, 'strength'), requireText(b, 'dose', 200), requireText(b, 'frequency', 200),
           JSON.stringify(parseScheduledTimes(b.scheduled_times)), optionalTextValue(b.prescribing_source, 300, 'prescribing_source'),
           optionalTextValue(b.notes, 4000, 'notes'), active ? 1 : 0, requireIsoDateValue(b.start_date, 'start_date'),
-          stoppedDate, stoppedReason, medicationId,
-        ).run();
-      return json({ success: true });
+          stoppedDate, stoppedReason,
+        ]);
+      return json({ success: true, revision: record.revision });
     }
     const medicationReactivateMatch = endpoint.match(/^\/medical\/medications\/(\d+)\/reactivate$/);
     if (medicationReactivateMatch && method === 'POST') {
+      const b = await readJsonObject(request);
       const medicationId = +medicationReactivateMatch[1];
-      const existing = await env.DB.prepare('SELECT id FROM medications WHERE id = ?').bind(medicationId).first();
-      if (!existing) throw Object.assign(new Error('Medication not found'), { status: 404 });
-      await env.DB.prepare('UPDATE medications SET active = 1, stopped_date = NULL, stopped_reason = NULL, updated_at = datetime("now"), revision = revision + 1 WHERE id = ?')
-        .bind(medicationId).run();
-      return json({ success: true });
+      const record = await browserRevisionUpdate(env, 'medications', medicationId, requireExpectedRevision(b),
+        'UPDATE medications SET active = 1, stopped_date = NULL, stopped_reason = NULL, updated_at = datetime("now"), revision = revision + 1 WHERE id = ? AND revision = ?', []);
+      return json({ success: true, revision: record.revision });
     }
 
     if (endpoint === '/medical/doses' && method === 'GET') {
@@ -1312,12 +1319,12 @@ export async function handleAPI(request, env, endpoint, config) {
       const existing = await env.DB.prepare('SELECT * FROM prescription_renewals WHERE id = ?').bind(+prescriptionMatch[1]).first();
       if (!existing) throw Object.assign(new Error('Prescription renewal not found'), { status: 404 });
       const selection = await resolvePrescriptionMedication(env, b, existing);
-      await env.DB.prepare(`UPDATE prescription_renewals SET medication_id = ?, person = ?, medication_name = ?, last_ordered_date = ?,
-        next_order_date = ?, quantity_remaining = ?, status = ?, notes = ?, updated_at = datetime("now"), revision = revision + 1 WHERE id = ?`)
-        .bind(selection.medicationId, selection.person, selection.medicationName, optionalIsoDateValue(b.last_ordered_date, 'last_ordered_date'),
+      const id = +prescriptionMatch[1];
+      const record = await browserRevisionUpdate(env, 'prescription_renewals', id, requireExpectedRevision(b), `UPDATE prescription_renewals SET medication_id = ?, person = ?, medication_name = ?, last_ordered_date = ?,
+        next_order_date = ?, quantity_remaining = ?, status = ?, notes = ?, updated_at = datetime("now"), revision = revision + 1 WHERE id = ? AND revision = ?`, [selection.medicationId, selection.person, selection.medicationName, optionalIsoDateValue(b.last_ordered_date, 'last_ordered_date'),
           optionalIsoDateValue(b.next_order_date, 'next_order_date'), optionalNonNegativeInteger(b.quantity_remaining, 'quantity_remaining'),
-          requireChoice(b.status, 'status', PRESCRIPTION_STATUSES), optionalTextValue(b.notes, 4000, 'notes'), +prescriptionMatch[1]).run();
-      return json({ success: true });
+          requireChoice(b.status, 'status', PRESCRIPTION_STATUSES), optionalTextValue(b.notes, 4000, 'notes')]);
+      return json({ success: true, revision: record.revision });
     }
 
     /* Household */
@@ -1335,17 +1342,19 @@ export async function handleAPI(request, env, endpoint, config) {
     }
     const choreCompleteMatch = endpoint.match(/^\/household\/(\d+)\/complete$/);
     if (choreCompleteMatch && method === 'POST') {
+      const b = await readJsonObject(request);
       const chore = await env.DB.prepare('SELECT * FROM household_chores WHERE id = ?').bind(+choreCompleteMatch[1]).first();
       if (!chore) throw Object.assign(new Error('Chore not found'), { status: 404 });
       const nextDue = nextChoreDueDate(chore.next_due_date, chore.frequency, chore.recurrence_days, today);
+      let record;
       if (nextDue) {
-        await env.DB.prepare('UPDATE household_chores SET next_due_date = ?, done = 0, last_completed_at = datetime("now"), updated_at = datetime("now"), revision = revision + 1 WHERE id = ?')
-          .bind(nextDue, chore.id).run();
+        record = await browserRevisionUpdate(env, 'household_chores', chore.id, requireExpectedRevision(b),
+          'UPDATE household_chores SET next_due_date = ?, done = 0, last_completed_at = datetime("now"), updated_at = datetime("now"), revision = revision + 1 WHERE id = ? AND revision = ?', [nextDue]);
       } else {
-        await env.DB.prepare('UPDATE household_chores SET done = 1, last_completed_at = datetime("now"), updated_at = datetime("now"), revision = revision + 1 WHERE id = ?')
-          .bind(chore.id).run();
+        record = await browserRevisionUpdate(env, 'household_chores', chore.id, requireExpectedRevision(b),
+          'UPDATE household_chores SET done = 1, last_completed_at = datetime("now"), updated_at = datetime("now"), revision = revision + 1 WHERE id = ? AND revision = ?', []);
       }
-      return json({ success: true, next_due_date: nextDue });
+      return json({ success: true, next_due_date: nextDue, revision: record.revision });
     }
 
     /* Home Admin */
@@ -1368,13 +1377,13 @@ export async function handleAPI(request, env, endpoint, config) {
       const b = await readJsonObject(request);
       const recurrence = requireChoice(b.recurrence || 'None', 'recurrence', ADMIN_RECURRENCES);
       const status = requireChoice(b.status, 'status', ADMIN_STATUSES);
-      await env.DB.prepare(`UPDATE home_admin SET title = ?, category = ?, due_date = ?, recurrence = ?, recurrence_days = ?, status = ?, notes = ?,
-        completed_at = CASE WHEN ? = 'Done' THEN COALESCE(completed_at, datetime("now")) ELSE NULL END, updated_at = datetime("now"), revision = revision + 1 WHERE id = ?`)
-        .bind(requireText(b, 'title', 300), b.category ? requireText(b, 'category', 100) : 'General',
+      const id = +adminMatch[1];
+      const record = await browserRevisionUpdate(env, 'home_admin', id, requireExpectedRevision(b), `UPDATE home_admin SET title = ?, category = ?, due_date = ?, recurrence = ?, recurrence_days = ?, status = ?, notes = ?,
+        completed_at = CASE WHEN ? = 'Done' THEN COALESCE(completed_at, datetime("now")) ELSE NULL END, updated_at = datetime("now"), revision = revision + 1 WHERE id = ? AND revision = ?`, [requireText(b, 'title', 300), b.category ? requireText(b, 'category', 100) : 'General',
           requireIsoDateValue(b.due_date, 'due_date'), recurrence,
           recurrence === 'Custom' ? requirePositiveInteger(b.recurrence_days, 'recurrence_days', 3650) : null,
-          status, optionalTextValue(b.notes, 4000, 'notes'), status, +adminMatch[1]).run();
-      return json({ success: true });
+          status, optionalTextValue(b.notes, 4000, 'notes'), status]);
+      return json({ success: true, revision: record.revision });
     }
 
     /* Food meal planner and lightweight favourites */
@@ -1387,15 +1396,17 @@ export async function handleAPI(request, env, endpoint, config) {
     }
     if (endpoint === '/meal-plan' && method === 'POST') {
       const b = await readJsonObject(request);
-      await env.DB.prepare(`INSERT INTO meal_plan (plan_date, meal, notes, ingredients_needed, saved_meal_id, updated_at)
-        VALUES (?, ?, ?, ?, ?, datetime("now"))
-        ON CONFLICT(plan_date) DO UPDATE SET meal = excluded.meal, notes = excluded.notes,
-        ingredients_needed = excluded.ingredients_needed, saved_meal_id = excluded.saved_meal_id,
-        updated_at = datetime("now"), revision = meal_plan.revision + 1`)
-        .bind(requireIsoDateValue(b.plan_date, 'plan_date'), requireText(b, 'meal', 300),
-          optionalTextValue(b.notes, 2000, 'notes'), optionalTextValue(b.ingredients_needed, 2000, 'ingredients_needed'),
-          optionalPositiveInteger(b.saved_meal_id, 'saved_meal_id')).run();
-      return json({ success: true });
+      try {
+        const result = await env.DB.prepare(`INSERT INTO meal_plan (plan_date, meal, notes, ingredients_needed, saved_meal_id, updated_at)
+          VALUES (?, ?, ?, ?, ?, datetime("now"))`)
+          .bind(requireIsoDateValue(b.plan_date, 'plan_date'), requireText(b, 'meal', 300),
+            optionalTextValue(b.notes, 2000, 'notes'), optionalTextValue(b.ingredients_needed, 2000, 'ingredients_needed'),
+            optionalPositiveInteger(b.saved_meal_id, 'saved_meal_id')).run();
+        return json({ success: true, id: Number(result?.meta?.last_row_id || 0), revision: 1 });
+      } catch (error) {
+        if (isUniqueConflict(error)) throw Object.assign(new Error('A meal plan already exists for that date'), { status: 409 });
+        throw error;
+      }
     }
     const mealIngredientsMatch = endpoint.match(/^\/meal-plan\/(\d+)\/add-ingredients$/);
     if (mealIngredientsMatch && method === 'POST') {
@@ -1470,10 +1481,10 @@ const MCP_TOOLS = [
     from: stringProperty('Start date in YYYY-MM-DD format.', 10),
     to: stringProperty('End date in YYYY-MM-DD format.', 10),
   }, true),
-  toolDefinition('hearth_food_review', 'Save food review', 'Save or replace an AI food-diary review for a date.', {
+  toolDefinition('hearth_food_review', 'Save food review', 'Create one AI-attributed food-diary review for a date.', {
     date: stringProperty('Date in YYYY-MM-DD format.', 10),
     review: stringProperty('Review text.', 6000),
-    reviewer: stringProperty('Reviewer name.', 80),
+    reviewer: enumProperty(['AI'], 'Legacy reviewer attribution; only AI is accepted.'),
   }, false, ['date', 'review']),
   toolDefinition('hearth_water_status', 'Water status', 'Read today\'s and recent water totals.', {}, true),
   ...RESOURCE_MCP_TOOLS,
@@ -1842,12 +1853,17 @@ async function mcpFoodDiaryHistory(env, params) {
   return json({ from, to, days_logged: allDates.length, daily: dayMap, patterns: { skipped_breakfasts: skippedBreakfasts, avg_water_ml: Math.round(avgWater) }, reviews: (reviews.results || []).map(r => ({ id: r.id, date: r.date, review: r.review, reviewer: r.reviewer, created_at: r.created_at, revision: r.revision })) });
 }
 
-async function mcpFoodReview(env, params) {
+export async function mcpFoodReview(env, params) {
   if (!params.date || !params.review) return json({ error: 'date and review are required' }, 400);
-  await env.DB.prepare(`INSERT INTO food_reviews (date, review, reviewer, created_at) VALUES (?, ?, ?, datetime("now"))
-    ON CONFLICT(date) DO UPDATE SET review = excluded.review, reviewer = excluded.reviewer,
-    created_at = datetime("now"), revision = food_reviews.revision + 1`).bind(params.date, params.review, params.reviewer || 'AI').run();
-  return json({ success: true, message: 'Review for ' + params.date + ' saved' });
+  if (params.reviewer !== undefined && params.reviewer !== 'AI') return json({ error: 'Legacy food reviews are attributed to AI; use hearth_resource_create for Jace or Elijah' }, 400);
+  try {
+    const result = await env.DB.prepare('INSERT INTO food_reviews (date, review, reviewer, created_at) VALUES (?, ?, ?, datetime("now"))')
+      .bind(params.date, params.review, 'AI').run();
+    return json({ success: true, id: Number(result?.meta?.last_row_id || 0), revision: 1, reviewer: 'AI', message: 'Review for ' + params.date + ' saved' });
+  } catch (error) {
+    if (isUniqueConflict(error)) return json({ error: 'A food review already exists for that date' }, 409);
+    throw error;
+  }
 }
 
 async function mcpWaterStatus(env) {
@@ -2063,10 +2079,7 @@ function optionalIsoDateValue(value, name) {
 }
 
 function requireDateTimeValue(value, name) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?Z?)?$/.test(value)) {
-    throw inputError(`${name} must use an ISO date and time`);
-  }
-  if (Number.isNaN(new Date(value).getTime())) throw inputError(`${name} is not a valid date and time`);
+  if (!isValidLocalDateTime(value)) throw inputError(`${name} must use a valid ISO date and time`);
   return value;
 }
 
@@ -2079,6 +2092,33 @@ function integerValue(value, name, { optional = false, min = 0, max = Number.MAX
 
 function requirePositiveInteger(value, name, max = Number.MAX_SAFE_INTEGER) {
   return integerValue(value, name, { min: 1, max });
+}
+
+function isUniqueConflict(error) {
+  let current = error;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    const message = current instanceof Error ? current.message : String(current);
+    if (/UNIQUE constraint failed/i.test(message)) return true;
+    current = current instanceof Error ? current.cause : null;
+  }
+  return false;
+}
+
+function requireExpectedRevision(body) {
+  return requirePositiveInteger(body.revision, 'revision');
+}
+
+async function browserRevisionUpdate(env, table, id, revision, sql, values, isAlreadyApplied = null) {
+  const result = await env.DB.prepare(sql).bind(...values, id, revision).run();
+  const changes = Number(result?.meta?.changes ?? result?.changes ?? 0);
+  if (changes === 1) {
+    return (await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first()) || { id, revision: revision + 1 };
+  }
+
+  const existing = await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first();
+  if (!existing) throw Object.assign(new Error('Record not found'), { status: 404 });
+  if (isAlreadyApplied && isAlreadyApplied(existing)) return existing;
+  throw Object.assign(new Error('This record changed elsewhere. Reload the latest data and try again.'), { status: 409 });
 }
 
 function optionalPositiveInteger(value, name) {

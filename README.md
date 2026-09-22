@@ -48,6 +48,11 @@ only to configured Jace or Elijah partners. Updates require a stable record ID a
 revision, reject stale writes, preserve immutable medication-dose history, and expose no
 delete operation. They continue to use the existing `hearth:read` and `hearth:write` scopes.
 
+The legacy `hearth_food_review` tool remains available as a create-only compatibility tool.
+It always attributes its review to `AI`, returns a conflict when that date already has a
+review, and never replaces the existing record. Jace- or Elijah-attributed reviews use the
+typed `hearth_resource_create` tool instead.
+
 ## Deploy
 
 ### Custom-fork deployment safety

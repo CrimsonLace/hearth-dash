@@ -1,4 +1,5 @@
 import { MOOD_OPTIONS } from './moods.js';
+import { addCalendarDays, isValidLocalDateTime } from './date-utils.js';
 
 export const RESOURCE_ACTORS = Object.freeze(['Jace', 'Elijah']);
 export const MEDICAL_PEOPLE = Object.freeze(['Crimson', 'Conrad']);
@@ -53,7 +54,7 @@ const READ_FIELDS = {
   notes: { limit: boundedInteger(1, 50) },
   moments: { from: isoDate, to: isoDate, limit: boundedInteger(1, 100) },
   dates: { from: isoDate, to: isoDate, include_past: booleanValue, limit: boundedInteger(1, 100) },
-  shopping: { state: enumValue(['unchecked', 'checked', 'all']) },
+  shopping: { state: enumValue(['unchecked', 'checked', 'all']), limit: boundedInteger(1, 200) },
   medical_appointments: { person: enumValue(MEDICAL_PEOPLE), status: enumValue(APPOINTMENT_STATUSES), from: isoDate, to: isoDate },
   medications: { person: enumValue(MEDICAL_PEOPLE), active: booleanValue },
   medication_doses: { person: enumValue(MEDICAL_PEOPLE), date: isoDate, from: isoDate, to: isoDate, limit: boundedInteger(1, 200) },
@@ -272,7 +273,7 @@ function validateValue(value, validator, name, partners) {
     return value;
   }
   if (validator.kind === 'datetime') {
-    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?Z?)?$/.test(value) || Number.isNaN(new Date(value).getTime())) throw new ResourceInputError(`${name} must use a valid ISO date and time`);
+    if (!isValidLocalDateTime(value)) throw new ResourceInputError(`${name} must use a valid ISO date and time`);
     return value;
   }
   if (validator.kind === 'partner') {
@@ -301,7 +302,8 @@ function validateDateRange(value) {
     if (value.from > value.to) throw new ResourceInputError('from must not be after to');
     const days = (Date.parse(`${value.to}T00:00:00Z`) - Date.parse(`${value.from}T00:00:00Z`)) / 86400000;
     if (days > 90) throw new ResourceInputError('date range cannot exceed 90 days');
-  }
+  } else if (value.from) value.to = addCalendarDays(value.from, 90);
+  else if (value.to) value.from = addCalendarDays(value.to, -90);
 }
 
 function validateConditionalFields(data) {

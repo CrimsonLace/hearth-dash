@@ -54,7 +54,7 @@ async function readResource(env, config, { resource, filters }) {
     case 'shopping': {
       const where = filters.state && filters.state !== 'all' ? ' WHERE checked = ?' : '';
       const args = where ? [filters.state === 'checked' ? 1 : 0] : [];
-      result = await all(env, `SELECT * FROM shopping${where} ORDER BY checked ASC, created_at DESC`, args);
+      result = await all(env, `SELECT * FROM shopping${where} ORDER BY checked ASC, created_at DESC LIMIT ?`, [...args, filters.limit || 100]);
       break;
     }
     case 'medical_appointments': result = await readDateRange(env, 'medical_appointments', 'appointment_date', filters, 'appointment_date DESC, appointment_time DESC', 200, {
