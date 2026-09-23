@@ -3,6 +3,7 @@ import {
   addCalendarDays, addCalendarMonths, formatLocalLongDate, isValidLocalDateTime, localDateKey, localDateTimeKey, localTimeKey,
 } from './date-utils.js';
 import { MOOD_OPTIONS } from './moods.js';
+import { OAUTH_SCOPES } from './oauth-scopes.js';
 import { configuredPartners } from './partners.js';
 import {
   isResourceMcpTool, RESOURCE_MCP_TOOLS, resourceMcpScope, runResourceMcpTool,
@@ -733,7 +734,6 @@ export const applicationHandler = {
   }
 };
 
-const OAUTH_SCOPES = ['hearth:read', 'hearth:write'];
 const OAUTH_CSRF_TTL = 600;
 
 function oauthRequestFingerprint(oauthRequest) {
@@ -1661,7 +1661,7 @@ async function handleMCP(request, env, config, remainder, scopes = []) {
     return rpcResult(message.id, {
       protocolVersion,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'hearth-dash', version: '1.1.4-crimson.4' },
+      serverInfo: { name: 'hearth-dash', version: '1.1.4-crimson.4.1' },
       instructions: 'Hearth is a private shared dashboard. Read tools do not change data; write tools change the shared household record.',
     });
   }

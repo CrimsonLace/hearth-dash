@@ -18,7 +18,7 @@ Hearth is a small shared-life dashboard for configurable partners. It runs as a 
 > installation. **Do not use `npx hearth-dash@latest deploy`**: customized deployments must
 > run from a checked-out copy of `CrimsonLace/hearth-dash`.
 
-This fork identifies itself as **1.1.4-crimson.4** without publishing an npm package.
+This fork identifies itself as **1.1.4-crimson.4.1** without publishing an npm package.
 
 Calendar-day features use the `Europe/London` timezone, including dashboard summaries,
 medical schedules, household due dates, meal planning, food and water logs, and upcoming dates.
@@ -41,7 +41,7 @@ UTC remains authoritative for timestamps that represent real instants.
 
 The MCP server exposes `hearth_status`, `hearth_mood`, `hearth_note`, `hearth_moment`, `hearth_date`, `hearth_shopping_list`, `hearth_shopping_add`, `hearth_pressure`, `hearth_food_diary_today`, `hearth_food_diary_history`, `hearth_food_review`, and `hearth_water_status`.
 
-Version `1.1.4-crimson.4` also provides `hearth_resource_read`,
+Version `1.1.4-crimson.4.1` also provides `hearth_resource_read`,
 `hearth_resource_create`, and `hearth_resource_update`. These are closed, typed resource
 interfaces rather than generic HTTP or database proxies. Creates attribute authored records
 only to configured Jace or Elijah partners. Updates require a stable record ID and expected
@@ -80,7 +80,7 @@ schema. Back up the production D1 database before a production migration.
 
 Migration `003_resource_revisions.sql` adds an integer optimistic-concurrency revision to
 editable records. It is additive, does not add a revision to immutable medication doses, and
-must be applied before deploying `1.1.4-crimson.4`.
+must be applied before deploying `1.1.4-crimson.4.1`.
 
 The local `node cli/index.js deploy` command also applies pending migrations before Worker
 activation, but it is the full provisioning wizard and may prompt for secrets. Never substitute
