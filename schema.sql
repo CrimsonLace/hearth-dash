@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS moods (
     overall_scale IS NULL
     OR (typeof(overall_scale) = 'integer' AND overall_scale BETWEEN 1 AND 5)
   ),
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   from_partner TEXT NOT NULL,
   content TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 
@@ -34,6 +36,7 @@ CREATE TABLE IF NOT EXISTS moments (
   date TEXT NOT NULL,
   title TEXT NOT NULL,
   description TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 
@@ -42,6 +45,7 @@ CREATE TABLE IF NOT EXISTS dates (
   date TEXT NOT NULL,
   title TEXT NOT NULL,
   recurring INTEGER DEFAULT 0,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 
@@ -51,6 +55,7 @@ CREATE TABLE IF NOT EXISTS shopping (
   category TEXT DEFAULT 'Other',
   checked INTEGER DEFAULT 0,
   added_by TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 
@@ -69,6 +74,7 @@ CREATE TABLE IF NOT EXISTS food_diary (
   meal_type TEXT NOT NULL,
   note TEXT,
   photo_key TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_food_diary_date ON food_diary(date);
@@ -77,6 +83,7 @@ CREATE TABLE IF NOT EXISTS water_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date TEXT NOT NULL,
   amount_ml INTEGER NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_water_log_date ON water_log(date);
@@ -86,6 +93,7 @@ CREATE TABLE IF NOT EXISTS food_reviews (
   date TEXT UNIQUE NOT NULL,
   review TEXT NOT NULL,
   reviewer TEXT NOT NULL DEFAULT 'AI',
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_food_reviews_date ON food_reviews(date);
@@ -127,6 +135,7 @@ CREATE TABLE IF NOT EXISTS medical_appointments (
   status TEXT NOT NULL DEFAULT 'Upcoming' CHECK (status IN ('Upcoming', 'Completed', 'Cancelled', 'Rescheduled')),
   transport_needed INTEGER NOT NULL DEFAULT 0,
   preparation_needed TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -147,6 +156,7 @@ CREATE TABLE IF NOT EXISTS medications (
   start_date TEXT NOT NULL,
   stopped_date TEXT,
   stopped_reason TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -178,6 +188,7 @@ CREATE TABLE IF NOT EXISTS prescription_renewals (
   quantity_remaining INTEGER,
   status TEXT NOT NULL DEFAULT 'Enough' CHECK (status IN ('Enough', 'Order soon', 'Ordered', 'Ready', 'Collected')),
   notes TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -192,6 +203,7 @@ CREATE TABLE IF NOT EXISTS household_chores (
   done INTEGER NOT NULL DEFAULT 0,
   notes TEXT,
   last_completed_at TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -207,6 +219,7 @@ CREATE TABLE IF NOT EXISTS home_admin (
   status TEXT NOT NULL DEFAULT 'Upcoming' CHECK (status IN ('Upcoming', 'Due soon', 'Done')),
   notes TEXT,
   completed_at TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -218,6 +231,7 @@ CREATE TABLE IF NOT EXISTS saved_meals (
   notes TEXT,
   ingredients TEXT,
   favourite INTEGER NOT NULL DEFAULT 1,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -229,6 +243,7 @@ CREATE TABLE IF NOT EXISTS meal_plan (
   notes TEXT,
   ingredients_needed TEXT,
   saved_meal_id INTEGER,
+  revision INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

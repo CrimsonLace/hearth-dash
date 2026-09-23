@@ -211,6 +211,44 @@ export function classifyMoodOverallScaleSchema(output) {
   return 'expected';
 }
 
+export const RESOURCE_REVISION_TABLES = Object.freeze([
+  'moods', 'notes', 'moments', 'dates', 'shopping', 'medical_appointments', 'medications',
+  'prescription_renewals', 'household_chores', 'home_admin', 'food_diary', 'water_log',
+  'food_reviews', 'saved_meals', 'meal_plan',
+]);
+
+export function classifyResourceRevisionSchema(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+  } catch (error) {
+    throw new Error('Could not parse the revision schema inspection response.', { cause: error });
+  }
+  const envelopes = Array.isArray(parsed) ? parsed : [parsed];
+  if (!envelopes.length || envelopes.some(item => !item || typeof item !== 'object' || !Array.isArray(item.results))) {
+    throw new Error('The revision schema inspection response had an unexpected shape.');
+  }
+  const rows = envelopes.flatMap(item => item.results);
+  if (rows.length !== RESOURCE_REVISION_TABLES.length) {
+    throw new Error('Could not verify every editable table before reconciling migration 003.');
+  }
+  const byTable = new Map(rows.map(row => [row.table_name, row]));
+  if (byTable.size !== RESOURCE_REVISION_TABLES.length || RESOURCE_REVISION_TABLES.some(table => !byTable.has(table))) {
+    throw new Error('The revision schema inspection did not return every expected editable table exactly once.');
+  }
+  const present = rows.filter(row => row.column_name != null);
+  if (!present.length) return 'absent';
+  const valid = present.every(row => row.column_name === 'revision'
+    && String(row.column_type).toUpperCase() === 'INTEGER'
+    && Number(row.column_notnull) === 1
+    && String(row.column_default) === '1'
+    && Number(row.column_pk) === 0);
+  if (present.length !== RESOURCE_REVISION_TABLES.length || !valid) {
+    throw new Error('Migration 003 is absent from the ledger, but editable-table revisions are partial or do not match the expected schema. Manual intervention is required.');
+  }
+  return 'expected';
+}
+
 export async function applyPendingMigrations({ files, applied, applyFile, record, reconcile = async () => ({ ok: true, applied: false }) }) {
   const pending = pendingMigrationFiles(files, applied);
   for (const file of pending) {
@@ -254,6 +292,28 @@ export async function runMigrations(dbName, migrationsDir, cwd, options = {}) {
     applied,
     applyFile: file => executeSchema(dbName, join(migrationsDir, file), cwd, options),
     async reconcile(_file, version) {
+      if (version === '003_resource_revisions') {
+        const names = RESOURCE_REVISION_TABLES.map(name => `'${name}'`).join(', ');
+        const query = `SELECT m.name AS table_name,
+          p.name AS column_name,
+          p.type AS column_type,
+          p."notnull" AS column_notnull,
+          p.dflt_value AS column_default,
+          p.pk AS column_pk
+        FROM sqlite_master AS m
+        LEFT JOIN pragma_table_info(m.name) AS p ON p.name = 'revision'
+        WHERE m.type = 'table' AND m.name IN (${names})
+        ORDER BY m.name;`;
+        const inspected = await execWrangler([
+          'd1', 'execute', dbName, ...locationArgs, '--command', query, '--json',
+        ], cwd);
+        if (inspected.code !== 0) return { ok: false, error: inspected.stderr || inspected.stdout };
+        try {
+          return { ok: true, applied: classifyResourceRevisionSchema(inspected.stdout) === 'expected' };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : 'Could not verify migration 003 state.' };
+        }
+      }
       if (version !== '002_mood_overall_scale') return { ok: true, applied: false };
       const query = `SELECT m.sql AS table_sql,
         p.name AS column_name,

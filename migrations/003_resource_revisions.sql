@@ -1,0 +1,18 @@
+-- Hearth custom fork: optimistic-concurrency revisions for editable records.
+-- Additive only. Existing rows receive revision 1 from SQLite's constant default.
+
+ALTER TABLE moods ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE notes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE moments ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE dates ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE shopping ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE medical_appointments ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE medications ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE prescription_renewals ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE household_chores ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE home_admin ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE food_diary ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE water_log ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE food_reviews ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE saved_meals ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE meal_plan ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;

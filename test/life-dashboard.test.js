@@ -20,7 +20,7 @@ class RecordingD1 {
     return {
       args: [],
       bind(...args) { this.args = args; return this; },
-      async run() { db.statements.push({ kind: 'run', sql, args: this.args }); return { success: true }; },
+      async run() { db.statements.push({ kind: 'run', sql, args: this.args }); return { success: true, meta: { changes: 1, last_row_id: 1 } }; },
       async first() { db.statements.push({ kind: 'first', sql, args: this.args }); return db.firstValue(sql, this.args); },
       async all() { db.statements.push({ kind: 'all', sql, args: this.args }); return { results: db.allValue(sql, this.args) }; },
     };
@@ -60,20 +60,23 @@ class StatefulMedicalD1 {
           db.medications.push({
             id: db.nextMedicationId++, person, name, strength, dose, frequency,
             scheduled_times: scheduledTimes, prescribing_source: prescribingSource, notes,
-            active: 1, start_date: startDate, stopped_date: null, stopped_reason: null,
+            active: 1, start_date: startDate, stopped_date: null, stopped_reason: null, revision: 1,
           });
         } else if (/UPDATE medications SET person/.test(sql)) {
           const [person, name, strength, dose, frequency, scheduledTimes, prescribingSource, notes,
-            active, startDate, stoppedDate, stoppedReason, id] = this.args;
+            active, startDate, stoppedDate, stoppedReason, id, revision] = this.args;
           const item = db.medications.find(value => value.id === id);
+          if (!item || item.revision !== revision) return { success: true, meta: { changes: 0 } };
           Object.assign(item, {
             person, name, strength, dose, frequency, scheduled_times: scheduledTimes,
             prescribing_source: prescribingSource, notes, active, start_date: startDate,
-            stopped_date: stoppedDate, stopped_reason: stoppedReason,
+            stopped_date: stoppedDate, stopped_reason: stoppedReason, revision: revision + 1,
           });
         } else if (/UPDATE medications SET active = 1/.test(sql)) {
-          const item = db.medications.find(value => value.id === this.args[0]);
-          Object.assign(item, { active: 1, stopped_date: null, stopped_reason: null });
+          const [id, revision] = this.args;
+          const item = db.medications.find(value => value.id === id);
+          if (!item || item.revision !== revision) return { success: true, meta: { changes: 0 } };
+          Object.assign(item, { active: 1, stopped_date: null, stopped_reason: null, revision: revision + 1 });
         } else if (/INSERT INTO medication_doses/.test(sql)) {
           const [medicationId, person, medicationName, medicationStrength, medicationDose,
             scheduledAt, actualTakenAt, status] = this.args;
@@ -87,7 +90,7 @@ class StatefulMedicalD1 {
             actual_taken_at: actualTakenAt, status, created_at: 'unchanged-created-at',
           });
         }
-        return { success: true };
+        return { success: true, meta: { changes: 1, last_row_id: 1 } };
       },
       async all() { return { results: [] }; },
     };
@@ -117,7 +120,7 @@ test('renders the warm responsive dashboard without visible weather or pressure 
   assert.match(html, /O&#39;Malley/);
   assert.doesNotMatch(html, /<svg onload=alert\(1\)>/);
   assert.match(html, /&lt;svg onload=alert\(1\)&gt;/);
-  assert.match(html, /1\.1\.4-crimson\.3/);
+  assert.match(html, /1\.1\.4-crimson\.4/);
 });
 
 test('normalizes optional partner configuration and preserves two-person fallback', () => {
@@ -149,6 +152,9 @@ test('renders all configured partners in relevant controls and the Hearth subtit
   assert.match(html, /Reactivate/);
   assert.match(html, /All medications/);
   assert.match(html, /Custom \/ other/);
+  assert.match(html, /data-revision="'\+item\.revision\+'"/);
+  assert.match(html, /form\.dataset\.revision/);
+  assert.match(html, /This record changed elsewhere\. Reload the latest data and try again\./);
   assert.doesNotMatch(html, /86400000|24\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
 });
 
@@ -160,7 +166,7 @@ test('fork documentation never presents the upstream package as an executable co
   assert.deepEqual(operationalLines, []);
   assert.match(readme, /Do not use[^\n]*hearth-dash@latest deploy/);
   assert.match(readme, /CrimsonLace\/hearth-dash/);
-  assert.equal(packageJson.version, '1.1.4-crimson.3');
+  assert.equal(packageJson.version, '1.1.4-crimson.4');
   assert.equal(packageJson.private, true);
 });
 
@@ -186,9 +192,10 @@ test('creates and edits a medical appointment while keeping medical people indep
   assert.match(db.statements[0].sql, /INSERT INTO medical_appointments/);
   assert.equal(db.statements[0].args[0], 'Crimson');
 
-  assert.equal((await handleAPI(request({ ...body, status: 'Completed' }, 'PUT'), { DB: db }, '/medical/appointments/7', config)).status, 200);
+  assert.equal((await handleAPI(request({ ...body, status: 'Completed', revision: 1 }, 'PUT'), { DB: db }, '/medical/appointments/7', config)).status, 200);
   assert.match(db.statements[1].sql, /UPDATE medical_appointments/);
-  assert.equal(db.statements[1].args.at(-1), 7);
+  assert.match(db.statements[1].sql, /revision = revision \+ 1/);
+  assert.deepEqual(db.statements[1].args.slice(-2), [7, 1]);
 
   const rejected = await handleAPI(request({ ...body, person: 'Elijah' }), { DB: db }, '/medical/appointments', config);
   assert.equal(rejected.status, 400);
@@ -209,7 +216,7 @@ test('medication edits do not rewrite historical dose snapshots', async () => {
     person: 'Conrad', name: 'Medicine B', strength: '20mg', dose: 'two tablets', frequency: 'Daily',
     scheduled_times: ['08:00'], start_date: '2026-09-01', active: true,
   };
-  assert.equal((await handleAPI(request(edit, 'PUT'), { DB: db }, '/medical/medications/4', config)).status, 200);
+  assert.equal((await handleAPI(request({ ...edit, revision: 1 }, 'PUT'), { DB: db }, '/medical/medications/4', config)).status, 200);
   assert.equal((await handleAPI(request({ medication_id: 4, scheduled_at: '2026-09-20T08:00', status: 'Taken' }), { DB: db }, '/medical/doses', config)).status, 200);
   const doseInsert = db.statements.find(entry => entry.sql.includes('INSERT INTO medication_doses'));
   assert.ok(doseInsert);
@@ -222,7 +229,7 @@ test('duplicate dose submissions cannot replace immutable history', async () => 
   db.medications.push({
     id: 4, person: 'Conrad', name: 'Medicine A', strength: '10mg', dose: 'one tablet',
     frequency: 'Daily', scheduled_times: '["08:00"]', active: 1, start_date: '2026-09-01',
-    stopped_date: null, stopped_reason: null,
+    stopped_date: null, stopped_reason: null, revision: 1,
   });
   const first = await handleAPI(request({
     medication_id: 4, scheduled_at: '2026-09-20T08:00', status: 'Taken',
@@ -259,7 +266,7 @@ test('editing a stopped medication preserves stop state until explicit reactivat
 
   const edited = await handleAPI(request({
     person: 'Crimson', name: 'Medicine A revised', strength: '10mg', dose: 'half tablet', frequency: 'Daily',
-    scheduled_times: ['08:00'], start_date: '2026-09-01', notes: 'Edited while stopped',
+    scheduled_times: ['08:00'], start_date: '2026-09-01', notes: 'Edited while stopped', revision: db.medications[0].revision,
   }, 'PUT'), { DB: db }, '/medical/medications/1', config);
   assert.equal(edited.status, 200);
   assert.equal(db.medications[0].active, 0);
@@ -272,7 +279,7 @@ test('editing a stopped medication preserves stop state until explicit reactivat
   assert.equal(forbiddenReactivation.status, 400);
   assert.equal(db.medications[0].active, 0);
 
-  const reactivated = await handleAPI(request({}, 'POST'), { DB: db }, '/medical/medications/1/reactivate', config);
+  const reactivated = await handleAPI(request({ revision: db.medications[0].revision }, 'POST'), { DB: db }, '/medical/medications/1/reactivate', config);
   assert.equal(reactivated.status, 200);
   assert.equal(db.medications[0].active, 1);
   assert.equal(db.medications[0].stopped_date, null);
@@ -328,7 +335,7 @@ test('validates prescription medication selections and preserves historical inac
   const inactiveRenewal = { id: 7, medication_id: 3, person: 'Crimson', medication_name: 'Historical stopped name' };
   const inactiveDb = makeDb(inactiveRenewal);
   const inactiveEdit = await handleAPI(request({
-    ...base, medication_id: 3, medication_name: 'Client rewrite attempt',
+    ...base, medication_id: 3, medication_name: 'Client rewrite attempt', revision: 1,
   }, 'PUT'), { DB: inactiveDb }, '/medical/prescriptions/7', config);
   assert.equal(inactiveEdit.status, 200);
   const inactiveUpdate = inactiveDb.statements.find(statement => statement.sql.startsWith('UPDATE prescription_renewals'));
@@ -336,9 +343,9 @@ test('validates prescription medication selections and preserves historical inac
 
   const legacyRenewal = { id: 8, medication_id: null, person: 'Crimson', medication_name: 'Legacy free text' };
   const legacyDb = makeDb(legacyRenewal);
-  assert.equal((await handleAPI(request({ ...base, medication_id: null, medication_name: 'Legacy free text' }, 'PUT'),
+  assert.equal((await handleAPI(request({ ...base, medication_id: null, medication_name: 'Legacy free text', revision: 1 }, 'PUT'),
     { DB: legacyDb }, '/medical/prescriptions/8', config)).status, 200);
-  assert.equal((await handleAPI(request({ ...base, medication_id: null, medication_name: 'Silently rewritten' }, 'PUT'),
+  assert.equal((await handleAPI(request({ ...base, medication_id: null, medication_name: 'Silently rewritten', revision: 1 }, 'PUT'),
     { DB: makeDb(legacyRenewal) }, '/medical/prescriptions/8', config)).status, 400);
 });
 
@@ -346,12 +353,12 @@ test('stopping a medication defaults to the London calendar date and actual dose
   const existing = {
     id: 4, person: 'Crimson', name: 'Medicine', strength: '10mg', dose: 'one tablet', frequency: 'Daily',
     scheduled_times: '[]', prescribing_source: null, notes: null, active: 1, start_date: '2026-09-01',
-    stopped_date: null, stopped_reason: null,
+    stopped_date: null, stopped_reason: null, revision: 1,
   };
   const db = new RecordingD1({ first: sql => sql.includes('SELECT * FROM medications') ? existing : null });
   const stopped = await handleAPI(request({
     person: 'Crimson', name: 'Medicine', strength: '10mg', dose: 'one tablet', frequency: 'Daily',
-    scheduled_times: [], start_date: '2026-09-01', active: false,
+    scheduled_times: [], start_date: '2026-09-01', active: false, revision: 1,
   }, 'PUT'), { DB: db }, '/medical/medications/4', config);
   assert.equal(stopped.status, 200);
   const stopUpdate = db.statements.find(statement => statement.sql.startsWith('UPDATE medications SET person'));
@@ -371,10 +378,11 @@ test('calculates recurring chores from the later of due date and completion day'
   assert.equal(nextChoreDueDate('2026-09-20', 'Custom', 10, '2026-09-20'), '2026-09-30');
   assert.equal(nextChoreDueDate('2026-09-20', 'One-off', null, '2026-09-20'), null);
 
-  const db = new RecordingD1({ first: () => ({ id: 3, task: 'Bins', frequency: 'Weekly', recurrence_days: null, next_due_date: '2026-09-01' }) });
-  const response = await handleAPI(request({}, 'POST'), { DB: db }, '/household/3/complete', config);
+  const db = new RecordingD1({ first: () => ({ id: 3, task: 'Bins', frequency: 'Weekly', recurrence_days: null, next_due_date: '2026-09-01', revision: 1 }) });
+  const response = await handleAPI(request({ revision: 1 }, 'POST'), { DB: db }, '/household/3/complete', config);
   assert.equal(response.status, 200);
-  assert.match(db.statements.at(-1).sql, /UPDATE household_chores SET next_due_date/);
+  const completion = db.statements.find(statement => /UPDATE household_chores SET next_due_date/.test(statement.sql));
+  assert.match(completion.sql, /revision = revision \+ 1/);
 });
 
 test('stores home-admin status and meal planning without duplicating shopping storage', async () => {
