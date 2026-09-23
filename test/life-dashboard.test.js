@@ -166,7 +166,7 @@ test('fork documentation never presents the upstream package as an executable co
   assert.deepEqual(operationalLines, []);
   assert.match(readme, /Do not use[^\n]*hearth-dash@latest deploy/);
   assert.match(readme, /CrimsonLace\/hearth-dash/);
-  assert.equal(packageJson.version, '1.1.4-crimson.4');
+  assert.equal(packageJson.version, '1.1.4-crimson.4.1');
   assert.equal(packageJson.private, true);
 });
 

@@ -110,7 +110,7 @@ test('implements MCP initialize and scoped tool discovery over JSON-RPC', async 
   const initBody = await initialized.json();
   assert.equal(initBody.result.protocolVersion, '2025-06-18');
   assert.deepEqual(initBody.result.capabilities, { tools: { listChanged: false } });
-  assert.equal(initBody.result.serverInfo.version, '1.1.4-crimson.4');
+  assert.equal(initBody.result.serverInfo.version, '1.1.4-crimson.4.1');
 
   const listed = await callMcp({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, env(), ['hearth:read'], { 'MCP-Protocol-Version': '2025-06-18' });
   const listBody = await listed.json();
@@ -126,6 +126,8 @@ test('implements MCP initialize and scoped tool discovery over JSON-RPC', async 
   assert.ok(allNames.includes('hearth_resource_read'));
   assert.ok(allNames.includes('hearth_resource_create'));
   assert.ok(allNames.includes('hearth_resource_update'));
+  assert.ok(allNames.includes('hearth_shopping_list'));
+  assert.ok(allNames.includes('hearth_shopping_add'));
 });
 
 test('resource MCP tools enforce scopes and strict resource validation', async () => {

@@ -1,7 +1,6 @@
 import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
 import { applicationHandler, isOAuthRoute, oauthApiHandler, oauthDefaultHandler, withinRateLimit } from './worker.js';
-
-const OAUTH_SCOPES = ['hearth:read', 'hearth:write'];
+import { OAUTH_SCOPES } from './oauth-scopes.js';
 
 function createOAuthProvider(request, env) {
   const origin = new URL(request.url).origin;
@@ -27,7 +26,7 @@ function createOAuthProvider(request, env) {
     resourceMetadata: {
       resource,
       authorization_servers: [origin],
-      scopes_supported: ['hearth:read'],
+      scopes_supported: OAUTH_SCOPES,
       bearer_methods_supported: ['header'],
       resource_name: 'Hearth Dash',
     },
