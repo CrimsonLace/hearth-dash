@@ -25,6 +25,12 @@ export function getRedesignedDashboardHTML(config) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#241318">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="64x64" href="/icons/favicon-64.png">
+  <link rel="apple-touch-icon" href="/icons/hearth-192.png">
   <title>Hearth</title>
   <style>
     :root{--bg:#F7F2EA;--card:#FFFDFC;--rose:#B86B7A;--plum:#7C5A72;--gold:#C7A35A;--sage:#8FA58D;--text:#3A3436;--muted:#7D7477;--line:#E8DDD2;--danger:#A44E57;--shadow:0 10px 30px rgba(74,55,59,.08)}
@@ -39,7 +45,23 @@ export function getRedesignedDashboardHTML(config) {
     .shop-item{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:.55rem}.shop-item.done .row-title{text-decoration:line-through;color:var(--muted)}.shop-item input{width:auto}.meal-photo{width:72px;height:72px;object-fit:cover;border-radius:12px;border:1px solid var(--line)}.section-divider{margin:1.1rem 0 .35rem;padding-top:.9rem;border-top:1px solid var(--line);font-size:.76rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
     footer{color:var(--muted);text-align:center;font-size:.78rem;padding:2.5rem 0 1rem}
     @media(max-width:900px){.card,.card.wide{grid-column:span 6}.card.full{grid-column:1/-1}.day-grid{grid-template-columns:repeat(7,150px)}}
-    @media(max-width:650px){.shell{padding:.85rem}.topbar{align-items:flex-start}.menu-toggle{display:block}nav{display:none;flex-direction:column;align-items:stretch}nav.open{display:flex}nav a{border-radius:10px}.card,.card.wide,.card.half{grid-column:1/-1}.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.grid{gap:.8rem}.card{padding:1rem}.brand{font-size:1.7rem}.row{align-items:flex-start}.actions{justify-content:flex-start}}
+    @media(max-width:650px){
+      html,body{max-width:100%;overflow-x:clip}
+      .shell,main,.page,.grid,.card{min-width:0;max-width:100%}
+      .shell{padding:max(.75rem,env(safe-area-inset-left)) max(.75rem,env(safe-area-inset-right))}
+      .topbar{align-items:center;gap:.65rem;padding:.6rem 0 1rem}.topbar>div{min-width:0;flex:1}.brand{font-size:1.65rem}.tagline{font-size:.82rem}
+      .menu-toggle{display:block;min-width:48px;min-height:48px;padding:.7rem .9rem;flex:0 0 auto}
+      nav{display:none;flex-direction:column;align-items:stretch;max-height:70dvh;overflow-y:auto;overscroll-behavior:contain;margin-bottom:1rem;padding:.45rem 0}
+      nav.open{display:flex}nav a{display:flex;align-items:center;min-height:46px;padding:.65rem .8rem;border-radius:10px;font-size:1rem}
+      .card,.card.wide,.card.half{grid-column:1/-1}.form-grid{grid-template-columns:minmax(0,1fr)}.span-2{grid-column:auto}.grid{gap:.8rem}.card{padding:1rem}
+      input,select,textarea{min-height:48px;padding:.72rem .8rem;font-size:16px}textarea{min-height:100px}.check input{min-width:24px;min-height:24px}
+      .btn,.subnav a{min-height:44px;display:inline-flex;align-items:center;justify-content:center}.btn{padding:.7rem .9rem}.btn.small{min-height:44px;padding:.6rem .75rem;font-size:.86rem}
+      .actions{justify-content:stretch}.actions .btn{flex:1 1 auto}.row{align-items:flex-start;flex-wrap:wrap}.row-main{flex:1 1 12rem}.shop-item{grid-template-columns:auto minmax(0,1fr) auto;align-items:center}.shop-item .meta{grid-column:2/-1}
+      .subnav{gap:.45rem}.subnav a{padding:.55rem .75rem}.day-grid{grid-template-columns:repeat(7,minmax(140px,1fr));max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin}
+      .table-wrap{max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}table{min-width:34rem}
+      [role="dialog"],dialog{width:min(100% - 1rem,36rem);max-width:calc(100vw - 1rem);max-height:calc(100dvh - 1rem);overflow:auto;margin:auto}
+      img,svg,video,canvas{max-width:100%}footer{padding:1.5rem 0 calc(1rem + env(safe-area-inset-bottom))}
+    }
   </style>
 </head>
 <body>
@@ -94,8 +116,13 @@ export function getRedesignedDashboardHTML(config) {
       <article class="card half"><h2>Food review</h2><form id="review-form"><label>Date<input type="date" name="date" required></label><label>Reviewer<input name="reviewer" maxlength="80" value="AI"></label><label>Review<textarea name="review" maxlength="6000" required></textarea></label><button class="btn">Save review</button></form><div id="review-list" class="stack" style="margin-top:1rem"></div></article>
     </div></section>
   </main>
-  <footer>Hearth · private, practical, and yours · 1.1.4-crimson.4.1</footer>
+  <footer>Hearth · private, practical, and yours · 1.1.4-crimson.5</footer>
 </div>
+<script>
+  if ('serviceWorker' in navigator) window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+  });
+</script>
 <script>
   const PARTNERS=${inlineJson(partners)};
   const TIME_ZONE=${inlineJson(HEARTH_TIME_ZONE)};

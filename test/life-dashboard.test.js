@@ -120,7 +120,7 @@ test('renders the warm responsive dashboard without visible weather or pressure 
   assert.match(html, /O&#39;Malley/);
   assert.doesNotMatch(html, /<svg onload=alert\(1\)>/);
   assert.match(html, /&lt;svg onload=alert\(1\)&gt;/);
-  assert.match(html, /1\.1\.4-crimson\.4/);
+  assert.match(html, /1\.1\.4-crimson\.5/);
 });
 
 test('normalizes optional partner configuration and preserves two-person fallback', () => {
@@ -166,7 +166,7 @@ test('fork documentation never presents the upstream package as an executable co
   assert.deepEqual(operationalLines, []);
   assert.match(readme, /Do not use[^\n]*hearth-dash@latest deploy/);
   assert.match(readme, /CrimsonLace\/hearth-dash/);
-  assert.equal(packageJson.version, '1.1.4-crimson.4.1');
+  assert.equal(packageJson.version, '1.1.4-crimson.5');
   assert.equal(packageJson.private, true);
 });
 
