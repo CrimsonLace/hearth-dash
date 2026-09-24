@@ -1,4 +1,5 @@
 import { getRedesignedDashboardHTML } from './dashboard.js';
+import { PWA_MANIFEST, PWA_SERVICE_WORKER_SOURCE, getPwaIconBytes } from './pwa.js';
 import {
   addCalendarDays, addCalendarMonths, formatLocalLongDate, isValidLocalDateTime, localDateKey, localDateTimeKey, localTimeKey,
 } from './date-utils.js';
@@ -221,6 +222,12 @@ function getLoginPage(config) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#241318">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="64x64" href="/icons/favicon-64.png">
+  <link rel="apple-touch-icon" href="/icons/hearth-192.png">
   <title>Hearth Dash</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -245,6 +252,11 @@ function getLoginPage(config) {
       <button type="submit">Enter</button>
     </form>
   </div>
+  <script>
+    if ('serviceWorker' in navigator) window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -692,6 +704,15 @@ export const applicationHandler = {
       });
     }
 
+    if (path === '/manifest.webmanifest') {
+      return pwaStaticResponse(request, JSON.stringify(PWA_MANIFEST), 'application/manifest+json; charset=utf-8', 'public, max-age=3600');
+    }
+    if (path === '/sw.js') {
+      return pwaStaticResponse(request, PWA_SERVICE_WORKER_SOURCE, 'text/javascript; charset=utf-8', 'no-cache', { 'Service-Worker-Allowed': '/' });
+    }
+    const iconBytes = getPwaIconBytes(path);
+    if (iconBytes) return pwaStaticResponse(request, iconBytes, 'image/png', 'public, max-age=86400');
+
     // Auth
     const sessionToken = getCookie(request, '__Host-hearth_session');
     const isAuthenticated = await verifySession(sessionToken, config.SESSION_SECRET);
@@ -733,6 +754,15 @@ export const applicationHandler = {
     return new Response(getRedesignedDashboardHTML(config), { headers: securityHeaders({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }) });
   }
 };
+
+function pwaStaticResponse(request, body, contentType, cacheControl, extraHeaders = {}) {
+  if (!['GET', 'HEAD'].includes(request.method)) {
+    return new Response(null, { status: 405, headers: securityHeaders({ Allow: 'GET, HEAD', 'Cache-Control': 'no-store' }) });
+  }
+  return new Response(request.method === 'HEAD' ? null : body, {
+    headers: securityHeaders({ 'Content-Type': contentType, 'Cache-Control': cacheControl, ...extraHeaders }),
+  });
+}
 
 const OAUTH_CSRF_TTL = 600;
 
@@ -1661,7 +1691,7 @@ async function handleMCP(request, env, config, remainder, scopes = []) {
     return rpcResult(message.id, {
       protocolVersion,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'hearth-dash', version: '1.1.4-crimson.4.1' },
+      serverInfo: { name: 'hearth-dash', version: '1.1.4-crimson.5' },
       instructions: 'Hearth is a private shared dashboard. Read tools do not change data; write tools change the shared household record.',
     });
   }
